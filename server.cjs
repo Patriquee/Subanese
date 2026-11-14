@@ -14,7 +14,7 @@ const CURRENCY = process.env.CURRENCY || "KES";
 const DELIVERY_FEE = 350;
 
 const db = new DatabaseSync(
-  path.join(__dirname, "subanese.sqlite")
+  process.env.DATABASE_PATH || path.join(__dirname, "subanese.sqlite")
 );
 
 const uid = () => randomBytes(18).toString("hex");
