@@ -3789,7 +3789,7 @@ emailTimer.unref();
 server.on('close', () => clearInterval(emailTimer));
 void emailQueue.flush();
 
-server.listen(PORT, "127.0.0.1", () => {
+server.listen(PORT, process.env.HOST || "127.0.0.1", () => {
   console.log(
     "pastries by subanesse is running at http://localhost:" + PORT
   );
