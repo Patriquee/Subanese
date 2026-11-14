@@ -1,0 +1,136 @@
+/* Omit Preflight so existing forms, dialogs and dashboard retain their styles.
+   Prefix utilities to avoid collisions with legacy classes such as .grid. */
+@layer theme, utilities;
+@import "tailwindcss/theme.css" layer(theme) prefix(tw);
+@import "tailwindcss/utilities.css" layer(utilities) prefix(tw);
+@source "./**/*.{js,jsx}";
+@source "../server.cjs";
+
+/* Shared by the React cards and their initial HTML. Keep these rules unlayered
+   so they retain the same precedence as the existing storefront stylesheet. */
+body:not(.admin-view) .minimal-product {
+  @apply tw:flex tw:flex-col tw:p-0 tw:rounded-[16px] tw:overflow-hidden;
+  border: 1px solid var(--line);
+  box-shadow: 0 3px 14px #35231b06;
+  transition: box-shadow .2s ease, transform .2s ease, border-color .2s ease;
+}
+.minimal-product-link {
+  @apply tw:flex tw:flex-1 tw:flex-col tw:gap-[12px] tw:w-full tw:h-auto tw:p-[14px] tw:border-0 tw:bg-transparent tw:text-left tw:cursor-pointer;
+  color: var(--ink);
+  font: inherit;
+}
+.minimal-product-name {
+  @apply tw:block tw:text-[16px] tw:font-medium tw:leading-[1.4] tw:[overflow-wrap:anywhere];
+}
+.minimal-product-image {
+  @apply tw:block tw:relative tw:w-full tw:aspect-[1.35] tw:overflow-hidden tw:rounded-[10px] tw:order-first;
+  background: var(--line);
+}
+.minimal-product-image > img {
+  @apply tw:block tw:w-full tw:h-full tw:object-cover;
+  transition: transform .35s ease;
+}
+.minimal-product-image > small {
+  @apply tw:absolute tw:inset-0 tw:content-center tw:text-center tw:text-[12px];
+}
+.minimal-product-price {
+  @apply tw:block tw:text-[15px] tw:font-semibold tw:leading-[1.5] tw:tabular-nums tw:mt-auto;
+}
+.minimal-product-price small {
+  @apply tw:text-[11px];
+  color: var(--muted);
+}
+.minimal-product-link:hover {
+  background: color-mix(in srgb, var(--accent) 5%, var(--surface));
+}
+.minimal-product-link:focus-visible {
+  @apply tw:outline-[3px] tw:outline-solid tw:outline-offset-[-3px] tw:rounded-[6px];
+  outline-color: var(--accent);
+}
+body:not(.admin-view) .minimal-product .minimal-add {
+  @apply tw:mt-0 tw:mx-[14px] tw:mb-[14px] tw:w-[calc(100%_-_28px)] tw:min-h-[44px] tw:py-[10px] tw:px-[12px] tw:text-[13px] tw:rounded-[10px];
+}
+
+/* A warm, spacious storefront with the same palette in light and dark modes. */
+body:not(.admin-view) {
+  --gutter: clamp(16px, 3vw, 48px);
+  -webkit-font-smoothing: antialiased;
+}
+body:not(.admin-view) .site-header {
+  background: var(--surface);
+  box-shadow: 0 4px 24px #35231b05;
+}
+body:not(.admin-view) .site-header header { padding-inline: var(--gutter); }
+body:not(.admin-view) .site-header .category-nav:not([hidden]) { padding-inline: var(--gutter); }
+body:not(.admin-view) .site-header #home-search {
+  padding: 0 var(--gutter) 18px;
+  margin-bottom: 0;
+  border-bottom: 0;
+  box-sizing: border-box;
+}
+body:not(.admin-view) .discovery-search > label { color: var(--muted); font-size: 12px; letter-spacing: .04em; }
+body:not(.admin-view) .discovery-search input { border-radius: 12px !important; box-shadow: inset 0 1px 3px #35231b05; }
+body:not(.admin-view) .btn { border-radius: 10px; transition: background-color .2s ease, box-shadow .2s ease; }
+body:not(.admin-view) input:focus, body:not(.admin-view) textarea:focus, body:not(.admin-view) select:focus { border-color: var(--accent); }
+body:not(.admin-view) .premium-home { padding-top: 24px; }
+body:not(.admin-view) .discovery-categories { padding-block: 8px 30px; }
+body:not(.admin-view) .discovery-category-grid img {
+  border: 4px solid var(--surface);
+  box-shadow: 0 0 0 1px var(--line), 0 6px 18px #35231b0a;
+  box-sizing: border-box;
+}
+body:not(.admin-view) .discovery-home .discovery-hero {
+  padding: clamp(24px, 4vw, 56px) !important;
+  gap: clamp(24px, 4vw, 64px);
+  border: 1px solid color-mix(in srgb, var(--accent) 12%, var(--line));
+  border-radius: 24px;
+  background: linear-gradient(125deg, color-mix(in srgb, var(--accent) 9%, var(--surface)), var(--surface));
+}
+body:not(.admin-view) .discovery-hero .premium-hero-copy h1 {
+  font-size: clamp(36px, 4.3vw, 66px);
+  line-height: 1.08;
+  margin-block: 18px;
+}
+body:not(.admin-view) .discovery-hero .premium-hero-copy > p { font-size: 16px; line-height: 1.8; max-width: 440px; }
+body:not(.admin-view) .discovery-hero .premium-hero-copy .premium-order-note { font-size: 12px; margin-top: 18px; }
+body:not(.admin-view) .discovery-hero .premium-hero-media > img {
+  height: auto;
+  max-height: 420px;
+  aspect-ratio: 1.2;
+  border-radius: 18px;
+  box-shadow: 0 16px 40px #35231b12;
+}
+body:not(.admin-view) .premium-section { padding-block: 40px; }
+body:not(.admin-view) .premium-section-heading { margin-bottom: 24px; }
+body:not(.admin-view) .store-toolbar {
+  padding: 20px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--surface);
+}
+body:not(.admin-view) .store-service { border-radius: 10px; }
+body:not(.admin-view) .premium-custom { border-radius: 24px; }
+body:not(.admin-view) .premium-steps li { padding: 24px; border: 1px solid var(--line); border-radius: 16px; background: var(--surface); }
+body:not(.admin-view) .premium-steps li::before { position: static; background: color-mix(in srgb, var(--accent) 12%, var(--surface)); color: var(--accent); }
+body:not(.admin-view) dialog { border-radius: 20px; box-shadow: 0 24px 80px #0003; }
+body:not(.admin-view) dialog::backdrop { background: #21150fb3; backdrop-filter: blur(5px); }
+@media (hover: hover) {
+  body:not(.admin-view) .minimal-product:hover { transform: translateY(-4px); box-shadow: 0 12px 28px #35231b12; border-color: color-mix(in srgb, var(--accent) 30%, var(--line)); }
+  .minimal-product-link:hover .minimal-product-image > img { transform: scale(1.035); }
+}
+@media (max-width: 700px) {
+  body:not(.admin-view) .discovery-home .discovery-hero { padding: 24px !important; border-radius: 18px; }
+  body:not(.admin-view) .discovery-hero .premium-hero-media > img { max-height: 280px; aspect-ratio: 1.5; }
+  body:not(.admin-view) .premium-section { padding-block: 28px; }
+  body:not(.admin-view) .store-toolbar { padding: 14px; }
+}
+@media (max-width: 500px) {
+  body:not(.admin-view) .discovery-home .discovery-hero { padding: 20px !important; }
+  body:not(.admin-view) .discovery-hero .premium-hero-copy h1 { font-size: 38px; }
+  body:not(.admin-view) .minimal-product-link { padding: 12px; }
+  body:not(.admin-view) .minimal-product .minimal-add { margin: 0 12px 12px; width: calc(100% - 24px); }
+}
+@media (prefers-reduced-motion: reduce) {
+  body:not(.admin-view) .minimal-product, .minimal-product-image > img { transition: none; }
+  body:not(.admin-view) .minimal-product:hover, .minimal-product-link:hover .minimal-product-image > img { transform: none; }
+}
