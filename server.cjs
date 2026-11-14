@@ -491,10 +491,12 @@ const server = http.createServer(async (request, response) => {
       fail("Method not allowed.", 405);
     }
 
-if (request.method !== "GET") {  "http://localhost:" + PORT,
-  "http://127.0.0.1:" + PORT,
-  "https://subanese.onrender.com",
-];
+    if (request.method !== "GET") {
+      const allowedOrigins = [
+        "http://localhost:" + PORT,
+        "http://127.0.0.1:" + PORT,
+        "https://subanese.onrender.com",
+      ];
 
       const origin = request.headers.origin;
 
