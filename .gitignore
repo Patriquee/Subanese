@@ -1,3 +1,6 @@
 node_modules/
 .npm-cache/
 public/assets/
+/subanese.sqlite
+/subanese.sqlite-shm
+/subanese.sqlite-wal
