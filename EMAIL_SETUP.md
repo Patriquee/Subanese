@@ -1,5 +1,12 @@
 # Customer order emails
 
+The server automatically loads the project `.env` file. Fill in
+`RESEND_API_KEY`, `EMAIL_FROM` (a verified sender), `PUBLIC_SITE_URL` (the HTTPS
+website address), and `ADMIN_EMAIL` (the recovery address). The `.env` file is
+excluded from Git. Restart the server after saving changes. For an existing
+administrator with a saved recovery email, update that address in Account
+details; `ADMIN_EMAIL` only fills a blank recovery address.
+
 The shop uses Resend for transactional emails. Set up a verified sending domain in
 Resend and create a sending API key. See https://resend.com/docs/send-with-nodejs.
 Do not put the API key in browser code or commit it to source control.

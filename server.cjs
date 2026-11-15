@@ -1,3 +1,6 @@
+// Load local server secrets without exposing them in browser code.
+try { require('node:process').loadEnvFile(require('node:path').join(__dirname, '.env')); }
+catch (error) { if (error.code !== 'ENOENT') throw error; }
 const http = require("node:http");
 const fs = require("node:fs");
 const { DatabaseSync } = require("node:sqlite");
