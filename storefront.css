@@ -339,7 +339,11 @@ body:not(.admin-view) .store-shop .store-toolbar input[type=checkbox]{width:16px
 /* Compact bakery dashboard final layout. */
 .admin-page-title{margin-right:auto;font-size:18px;font-weight:600;line-height:1.4}
 .admin-toolbar{justify-content:flex-end;margin-bottom:20px}
-.admin-view #admin-profile-menu>summary{display:flex;align-items:center;gap:8px}
+.admin-view #admin-profile-menu>summary{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;width:60px;height:auto;min-height:60px;padding:6px;border:0;border-radius:8px;background:transparent}
+.admin-view #admin-profile-menu>summary .admin-display-name{font-size:12px;line-height:1.3;max-width:none}
+.admin-view .admin-sidebar nav .admin-signout{margin-top:auto;flex-shrink:0;display:block;width:100%;padding:12px;text-align:left;font:inherit;font-size:13px;color:inherit;background:transparent;border:0;border-top:1px solid var(--line);border-radius:0;cursor:pointer}
+.admin-view .admin-sidebar nav .admin-signout:hover{background:#edf2fc}
+.brand-logo img{transform:none}
 .admin-display-name{font-size:14px;font-weight:600;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 #admin-dashboard .analytics-heading h2{font-size:20px}
 .dashboard-quick-actions{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0 16px}
