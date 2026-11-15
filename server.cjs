@@ -202,8 +202,7 @@ if (process.argv.includes("--reset-admin-password")) {
   const salt = uid();
   db.exec("BEGIN IMMEDIATE");
   try {
-    db.exec("DELETE FROM admin");
-    db.prepare("INSERT INTO admin (salt, password) VALUES (?, ?)").run(
+    db.prepare("UPDATE admin SET salt = ?, password = ?").run(
       salt, hash(password, salt).toString("hex")
     );
     db.exec("DELETE FROM sessions");
@@ -246,6 +245,7 @@ if (!db.prepare("SELECT 1 FROM admin").get()) {
 
 const { createEmailQueue } = require("./order-email.cjs");
 const emailQueue = createEmailQueue(db, {env: process.env});
+const adminAuth = require("./admin-auth.cjs").createAdminAuth(db);
 
 function queueOrderEmail(order) {
   const items = typeof order.items === "string" ? JSON.parse(order.items) : order.items;
@@ -433,9 +433,9 @@ const server = http.createServer(async (request, response) => {
     }
 
     if (["GET", "HEAD"].includes(request.method) && pathname === "/brand/logo.jpeg") {
-      const file = path.join(__dirname, "Logo", "LOGO.jpeg");
-      if (!fs.existsSync(file)) fail("Logo unavailable.", 404);
-      response.writeHead(200, {"Content-Type": "image/jpeg", "Content-Length": fs.statSync(file).size, "Cache-Control": "public, max-age=86400"});
+      const original = path.join(__dirname, "Logo", "LOGO.jpeg");
+      const file = fs.existsSync(original) ? original : path.join(__dirname, 'public', 'brand', 'monogram.svg');
+      response.writeHead(200, {"Content-Type": file === original ? "image/jpeg" : "image/svg+xml", "Content-Length": fs.statSync(file).size, "Cache-Control": "no-cache"});
       if (request.method === "HEAD") return response.end();
       const stream = fs.createReadStream(file);
       stream.on("error", () => response.destroy());
@@ -496,6 +496,7 @@ const server = http.createServer(async (request, response) => {
         "http://localhost:" + PORT,
         "http://127.0.0.1:" + PORT,
         "https://subanese.onrender.com",
+        ...(process.env.PUBLIC_SITE_URL ? [new URL(process.env.PUBLIC_SITE_URL).origin] : []),
       ];
 
       const origin = request.headers.origin;
@@ -581,6 +582,18 @@ const server = http.createServer(async (request, response) => {
       fail('Not found.',404);
     }
 
+    if (request.method === 'POST' && ['/api/auth/admin/forgot-password', '/api/auth/admin/reset-password'].includes(pathname)) {
+      const body = await readBody(request);
+      try {
+        if (pathname.endsWith('/forgot-password')) {
+          await adminAuth.requestReset(body.email, request.socket.remoteAddress);
+          return send({ok:true, message:'If this email matches the administrator account, a reset link and code will be sent.'});
+        }
+        adminAuth.reset(body, request.socket.remoteAddress);
+        return send({ok:true}, 200, {'Set-Cookie':'sid=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0'});
+      } catch (error) { fail(error.message, error.status || 400); }
+    }
+
     // Administrator sign-in.
     if (
       request.method === "POST" &&
@@ -622,8 +635,8 @@ const server = http.createServer(async (request, response) => {
         Buffer.from(administrator.password, "hex")
       );
 
-      if (!valid) {
-        fail("Incorrect password.", 401);
+      if (!valid || String(body.username || "").trim().toLowerCase() !== administrator.username.toLowerCase()) {
+        fail("Incorrect username or password.", 401);
       }
 
       const token = uid();
@@ -935,6 +948,18 @@ const server = http.createServer(async (request, response) => {
     // Protected administrator endpoints.
     if (pathname.startsWith("/api/admin")) {
       requireAdmin(request);
+      if (pathname === '/api/admin/credentials' && request.method === 'PATCH') {
+        adminAuth.limit('credentials:' + request.socket.remoteAddress, 10);
+        const body = await readBody(request);
+        const admin = db.prepare('SELECT * FROM admin LIMIT 1').get();
+        const password = text(body.currentPassword, 'current password', 128);
+        if (!timingSafeEqual(hash(password, admin.salt), Buffer.from(admin.password,'hex'))) fail('Incorrect current password.',401);
+        let profile;
+        try { profile = adminAuth.profile(body); } catch (error) { fail(error.message); }
+        db.prepare('UPDATE admin SET username = ?, email = ?').run(profile.username, profile.email);
+        db.exec('DELETE FROM admin_password_resets');
+        return send({ok:true});
+      }
       if (pathname === '/api/admin/profile' && request.method === 'PATCH') {
         const body = await readBody(request);
         const name = text(body.name, 'admin name', 100);
@@ -981,7 +1006,7 @@ const server = http.createServer(async (request, response) => {
         return send({
           orders: orders.map(order => ({...order, notification: emailQueue.latest(order.id)})),
           cakes,
-          profile: {username: process.env.ADMIN_USERNAME || "Administrator", name: db.prepare("SELECT display_name FROM admin LIMIT 1").get()?.display_name || process.env.ADMIN_NAME || process.env.ADMIN_USERNAME || "Administrator"},
+          profile: {email: db.prepare("SELECT email FROM admin LIMIT 1").get()?.email || "", username: db.prepare("SELECT username FROM admin LIMIT 1").get()?.username || "admin", name: db.prepare("SELECT display_name FROM admin LIMIT 1").get()?.display_name || process.env.ADMIN_NAME || process.env.ADMIN_USERNAME || "Administrator"},
           finance: finance.report(),
           marketingHolidays: (process.env.MARKETING_HOLIDAYS || "").split(",").map(date => date.trim()).filter(date => /^\d{4}-\d{2}-\d{2}$/.test(date) && Number.isFinite(Date.parse(date)) && new Date(date).toISOString().slice(0,10) === date),
           analytics: db.prepare("SELECT id, name, created, date, total, status, method, items FROM orders ORDER BY created DESC").all().map(order => ({...order, items: JSON.parse(order.items)})),
@@ -3305,6 +3330,7 @@ async function adminPage() {
   let data;
 
   try {
+    if (new URLSearchParams(location.hash.split('?')[1] || '').has('reset')) throw Error('Open password recovery');
     const requestedOrder = new URLSearchParams(location.hash.split('?')[1] || '').get('order');
     data = await api('/admin' + (requestedOrder ? '?order=' + encodeURIComponent(requestedOrder) : ''));
   } catch {
@@ -3320,16 +3346,42 @@ async function adminPage() {
           '<ul><li>Keep orders moving</li><li>Manage your menu and stock</li><li>Stay on top of bakery performance</li></ul>' +
         '</div><div class="admin-auth-form">' +
         '<span class="eyebrow">Administrator access</span><h2 id="admin-login-title">Welcome back</h2>' +
-        '<p>Enter your administrator password to open your workspace.</p>' +
-        '<form id="login">' +
+        '<p>Enter your administrator username and password.</p>' +
+        '<form id="login"><label>Username<input name="username" autocomplete="username" required maxlength="64"></label>' +
           '<label for="admin-password">Administrator password</label>' +
           '<div class="admin-password-field"><input id="admin-password" type="password" name="password" required autocomplete="current-password" aria-describedby="login-help login-error" autocapitalize="none" spellcheck="false"><button id="admin-password-toggle" type="button" aria-controls="admin-password" aria-pressed="false">Show</button></div>' +
           '<p id="admin-caps-lock" class="small" hidden>Caps Lock is on.</p>' +
           '<p id="login-error" class="error" role="alert"></p>' +
           '<button id="admin-sign-in" class="btn" type="submit">Sign in to admin</button>' +
           '<p id="login-help" class="small">Need access? Contact the person who manages your bakery account.</p>' +
-        '</form></div></div>' +
+        '</form><button type="button" id="forgot-admin-password" class="btn secondary">Forgot password?</button><div id="admin-recovery"></div></div></div>' +
       '</section>';
+
+    const resetToken = new URLSearchParams(location.hash.split('?')[1] || '').get('reset');
+    function recoveryForm(token) {
+      $('#login').hidden = true;
+      $('#admin-recovery').innerHTML = token
+        ? '<h3>Choose a new password</h3><p>Enter the six-digit code from your email.</p><form id="admin-recovery-form"><label>Email code<input name="code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" required></label><label>New password<input name="password" type="password" minlength="12" maxlength="128" autocomplete="new-password" required></label><label>Confirm new password<input name="confirm" type="password" autocomplete="new-password" required></label><button class="btn">Reset password</button><p role="status"></p></form>'
+        : '<h3>Reset administrator password</h3><form id="admin-recovery-form"><label>Recovery email<input name="email" type="email" autocomplete="email" required></label><button class="btn">Email reset link and code</button><p role="status"></p></form>';
+      $('#admin-recovery-form').onsubmit = async event => {
+        event.preventDefault();
+        const form = event.currentTarget, button = form.querySelector('button'), status = form.querySelector('[role="status"]');
+        const values = Object.fromEntries(new FormData(form));
+        if (token && values.password !== values.confirm) { status.textContent = 'Passwords do not match.'; return; }
+        button.disabled = true;
+        try {
+          const result = await api('/auth/admin/' + (token ? 'reset-password' : 'forgot-password'), 'POST', {...values, token});
+          if (token) {
+            history.replaceState(null, '', '#/admin');
+            await adminPage(); toast('Password changed. Sign in with your username and new password.');
+          } else status.textContent = result.message;
+        } catch (error) { status.textContent = error.message; }
+        finally { button.disabled = false; }
+      };
+    }
+    $('#forgot-admin-password').onclick = () => recoveryForm();
+    if (resetToken) { history.replaceState(null, '', '#/admin'); recoveryForm(resetToken); }
+
 
     const backgroundVideo = $('#admin-event-video');
     const backgroundToggle = $('#admin-event-toggle');
@@ -3414,10 +3466,10 @@ async function adminPage() {
         (key === 'storefront'
           ? '<a href="/#/shop" target="_blank" rel="noopener noreferrer" aria-label="Storefront (opens in a new tab)">' + label + ' &nearr;</a>'
           : '<a href="#/admin?view=' + key + '"' + (view === key ? ' aria-current="page"' : '') + '>' + label + '</a>')
-      ).join('') + '</nav><a class="admin-store-link" href="/#/shop" target="_blank" rel="noopener noreferrer">View storefront &nearr;</a></aside>' +
+      ).join('') + '<button id="logout" type="button" class="admin-signout">Sign out</button></nav><a class="admin-store-link" href="/#/shop" target="_blank" rel="noopener noreferrer">View storefront &nearr;</a></aside>' +
       '<section class="admin-content section">' +
-      '<div class="admin-toolbar"><strong class="admin-page-title">' + escapeHTML({home:'Home',dashboard:'Analytics',orders:'Orders',cakes:'Custom cakes',transactions:'Transactions',finance:'Finance',items:'Items'}[view]) + '</strong><button type="button" class="theme-toggle" data-theme-toggle aria-label="Switch color theme"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M20.9 13A9 9 0 0 1 11 3.1 9 9 0 1 0 20.9 13Z"/></svg></button><details id="admin-profile-menu" class="profile-menu"><summary aria-label="Open admin profile"><span class="admin-display-name">' + escapeHTML(data.profile.name || data.profile.username) + '</span><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21v-2a8 8 0 0 1 16 0v2"/></svg></summary><div class="profile-dropdown"><strong>' + escapeHTML(data.profile.name || data.profile.username) + '</strong><p class="small">Administrator</p><button id="view-admin-profile" type="button">Account details</button><button id="logout" type="button">Sign out</button></div></details></div>' +
-      '<section id="admin-profile" class="panel" hidden tabindex="-1"><div class="row"><h2>User profile</h2><button id="close-admin-profile" class="btn secondary">Close profile</button></div><p>Username: ' + escapeHTML(data.profile.name || data.profile.username) + '</p><p>Role: Administrator</p><form id="admin-name-form"><label>Admin name<input name="name" maxlength="100" required value="' + escapeHTML(data.profile.name || data.profile.username) + '"></label><p class="error" role="alert"></p><button class="btn">Save name</button></form></section>' +
+      '<div class="admin-toolbar"><strong class="admin-page-title">' + escapeHTML({home:'Home',dashboard:'Analytics',orders:'Orders',cakes:'Custom cakes',transactions:'Transactions',finance:'Finance',items:'Items'}[view]) + '</strong><button type="button" class="theme-toggle" data-theme-toggle aria-label="Switch color theme"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M20.9 13A9 9 0 0 1 11 3.1 9 9 0 1 0 20.9 13Z"/></svg></button><details id="admin-profile-menu" class="profile-menu"><summary aria-label="Open admin profile"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21v-2a8 8 0 0 1 16 0v2"/></svg><span class="admin-display-name">Admin</span></summary><div class="profile-dropdown"><strong>' + escapeHTML(data.profile.name || data.profile.username) + '</strong><p class="small">Administrator</p><button id="view-admin-profile" type="button">Account details</button></div></details></div>' +
+      '<section id="admin-profile" class="panel" hidden tabindex="-1"><div class="row"><h2>User profile</h2><button id="close-admin-profile" class="btn secondary">Close profile</button></div><p>Username: ' + escapeHTML(data.profile.username) + '</p><p>Role: Administrator</p><form id="admin-name-form"><label>Admin name<input name="name" maxlength="100" required value="' + escapeHTML(data.profile.name || data.profile.username) + '"></label><p class="error" role="alert"></p><button class="btn">Save name</button></form><h3>Sign-in and recovery</h3><form id="admin-credentials-form"><label>Username<input name="username" required autocomplete="username" value="' + escapeHTML(data.profile.username) + '"></label><label>Recovery email<input name="email" type="email" required value="' + escapeHTML(data.profile.email) + '"></label><label>Current password<input name="currentPassword" type="password" autocomplete="current-password" required></label><button class="btn">Save sign-in details</button><p role="status"></p></form><button type="button" id="admin-change-password" class="btn secondary">Email password reset link and code</button><p id="admin-change-status" role="status"></p></section>' +
       '<section id="admin-home"' + (view === 'home' ? '' : ' hidden') + '>' + renderAdminHome(data, products) + '</section>' +
       '<section id="admin-cakes"' + (view === 'cakes' ? '' : ' hidden') + '><h2>Custom cake requests</h2><p>Review client ideas, reference images, and follow-up progress.</p><div class="fields"><label>Search requests<input id="cake-request-search" type="search" placeholder="Reference, client, flavour or requirements"></label><label>Status<select id="cake-request-status"><option value="">All statuses</option><option>new</option><option>reviewed</option><option>contacted</option><option>confirmed</option><option>preparing</option><option>ready</option><option>completed</option><option>cancelled</option><option>declined</option></select></label></div><div id="cake-request-list"></div></section>' +
       '<section id="admin-dashboard"' + (view === 'dashboard' ? '' : ' hidden') + '><div class="analytics-heading"><div><span class="eyebrow">Subanese administration</span><h2>Analytics</h2><p>Orders, collections, inventory, and recorded exceptions</p></div><div class="analytics-heading-actions"><a class="btn secondary" href="#/admin?view=finance">Finance records</a><button type="button" class="btn secondary" id="dashboard-export">Export CSV</button></div></div><div class="analytics-filters"><label>Period<select id="dashboard-period"><option value="0">All time</option><option value="7">Last 7 days</option><option value="30" selected>Last 30 days</option><option value="90">Last 90 days</option></select></label><label>Fulfillment<select id="dashboard-method"><option value="">All types</option><option value="pickup">Pickup</option><option value="delivery">Delivery</option></select></label><label>Order status<select id="dashboard-status"><option value="">All statuses</option><option>confirmed</option><option>preparing</option><option>ready</option><option>out for delivery</option><option>completed</option><option>cancelled</option></select></label><label class="analytics-search">Search<input id="dashboard-search" type="search" placeholder="Customer or order reference"></label><button type="button" class="btn secondary" id="dashboard-reset">Reset</button><label>Trend<select id="dashboard-metric"><option value="value">Order value</option><option value="count">Order volume</option></select></label><label>Group by<select id="dashboard-group"><option value="day">Day</option><option value="week">Week</option><option value="month">Month</option></select></label></div><div id="dashboard-results" aria-live="polite"></div></section>' +
@@ -3550,6 +3602,19 @@ async function adminPage() {
 
   const menu = $('#admin-profile-menu');
   menu.onkeydown = event => { if (event.key === 'Escape') { menu.open = false; menu.querySelector('summary').focus(); } };
+  $('#admin-credentials-form').onsubmit = async event => {
+    event.preventDefault();
+    const form = event.currentTarget, button = form.querySelector('button'); button.disabled = true;
+    try { await api('/admin/credentials', 'PATCH', Object.fromEntries(new FormData(form))); await adminPage(); toast('Sign-in details saved.'); }
+    catch (error) { form.querySelector('[role="status"]').textContent = error.message; }
+    finally { button.disabled = false; }
+  };
+  $('#admin-change-password').onclick = async event => {
+    event.currentTarget.disabled = true;
+    try { const result = await api('/auth/admin/forgot-password','POST',{email:data.profile.email}); $('#admin-change-status').textContent = result.message; }
+    catch (error) { $('#admin-change-status').textContent = error.message; }
+    finally { event.target.disabled = false; }
+  };
   $('#admin-name-form').onsubmit = async event => {
     event.preventDefault();
     const button = event.submitter; button.disabled = true;

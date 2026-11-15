@@ -87,7 +87,7 @@ function marketingAnalysis(orders, {period=30, holidays=[], now=new Date()}={}) 
  const start=period?Date.parse(today+'T00:00:00Z')-(period-1)*86400000:Math.min(Date.parse(today+'T00:00:00Z'),...valid.map(order=>Date.parse(dayFormat.format(new Date(order.created))+'T00:00:00Z')));
  const row=label=>({label,count:0,value:0,days:0});
  const weekdays=['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'].map(row);
- const hours=Array.from({length:24},(_,hour)=>row(String(hour).padStart(2,'0')+':00'));
+ const hours=Array.from({length:5},(_,index)=>row(String(index*5).padStart(2,'0')+':00\u2013'+String(Math.min(24,(index+1)*5)).padStart(2,'0')+':00'));
  const types=[row('Weekdays'),row('Weekends')],holidayTypes=[row('Configured holidays'),row('Other days')],quarters=new Map();
  const quarter=date=>date.slice(0,4)+' Q'+Math.ceil(Number(date.slice(5,7))/3);
  for(let time=start;time<=Date.parse(today+'T00:00:00Z');time+=86400000){
@@ -101,7 +101,7 @@ function marketingAnalysis(orders, {period=30, holidays=[], now=new Date()}={}) 
   if(Date.parse(key+'T00:00:00Z')<start)continue;
   if(order.status==='cancelled'){cancelled++;continue;}
   const weekday=new Date(key+'T00:00:00Z').getUTCDay();
-  for(const target of [weekdays[weekday],hours[Number(hourFormat.format(date))],types[weekday===0||weekday===6?1:0],holidayTypes[holidaySet.has(key)?0:1],quarters.get(quarter(key))]){target.count++;target.value+=order.total;}
+  for(const target of [weekdays[weekday],hours[Math.floor(Number(hourFormat.format(date))/5)],types[weekday===0||weekday===6?1:0],holidayTypes[holidaySet.has(key)?0:1],quarters.get(quarter(key))]){target.count++;target.value+=order.total;}
  }
  return {weekdays:[...weekdays.slice(1),weekdays[0]],hours,types,holidayTypes,quarters:[...quarters.values()],cancelled};
 }
@@ -113,5 +113,5 @@ function renderMarketingAnalysis(model) {
  };
  const panel=(title,body)=>'<section class="analytics-panel"><h3>'+title+'</h3>'+body+'</section>';
  const peak=[...data.hours].sort((a,b)=>b.count-a.count)[0];
- return '<section class="marketing-analysis"><h2>Marketing &amp; order timing</h2><p class="analytics-scope">Based on order placement in Nairobi time and current dashboard filters. Cancelled orders excluded. Order value is not collected revenue. Calendar-day averages include days with no orders; quarterly totals may cover partial quarters. Visitor traffic and campaign sources are not tracked.</p>'+(peak.count?'<p>Most orders were placed between <strong>'+peak.label+' and '+String((Number(peak.label.slice(0,2))+1)%24).padStart(2,'0')+':00</strong> ('+peak.count+' orders). Use observed patterns to plan campaign timing.</p>':'<p>No orders available for timing analysis.</p>')+'<div class="analytics-main-grid">'+panel('Orders by hour',table(data.hours,false))+panel('Orders by day of week',table(data.weekdays))+'</div><div class="analytics-main-grid">'+panel('Weekdays vs weekends',table(data.types))+panel('Quarterly analysis',table(data.quarters))+'</div>'+panel('Holiday analysis',(model.marketingHolidays?.length?'<p>Only explicitly configured holiday dates are classified as holidays.</p>'+table(data.holidayTypes):'<p>No holiday calendar configured. Set MARKETING_HOLIDAYS to comma-separated dates (YYYY-MM-DD), including observed or campaign holidays, then restart the server.</p>'))+'</section>';
+ return '<section class="marketing-analysis"><h2>Marketing &amp; order timing</h2><p class="analytics-scope">Based on order placement in Nairobi time and current dashboard filters. Cancelled orders excluded. Order value is not collected revenue. Calendar-day averages include days with no orders; quarterly totals may cover partial quarters. Visitor traffic and campaign sources are not tracked.</p>'+(peak.count?'<p>Most orders were placed during <strong>'+peak.label+'</strong> ('+peak.count+' orders). Use observed patterns to plan campaign timing.</p>':'<p>No orders available for timing analysis.</p>')+'<div class="analytics-main-grid">'+panel('Orders by five-hour interval',table(data.hours,false))+panel('Orders by day of week',table(data.weekdays))+'</div><div class="analytics-main-grid">'+panel('Weekdays vs weekends',table(data.types))+panel('Quarterly analysis',table(data.quarters))+'</div>'+panel('Holiday analysis',(model.marketingHolidays?.length?'<p>Only explicitly configured holiday dates are classified as holidays.</p>'+table(data.holidayTypes):'<p>No holiday calendar configured. Set MARKETING_HOLIDAYS to comma-separated dates (YYYY-MM-DD), including observed or campaign holidays, then restart the server.</p>'))+'</section>';
 }
