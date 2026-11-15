@@ -26,7 +26,10 @@ Keep credentials out of source control. Restart after changing environment
 variables. See EMAIL_SETUP.md for the existing Resend configuration.
 
 **Forgot password?** emails a link and six-digit code to the saved recovery
-address. Open the link, enter the code, and enter and confirm a new password.
+address, then advances to **Enter email code**. Verify the code to advance to
+**New password**, enter and confirm your password, then select **Log in** on the
+success screen and sign in with your new password. The emailed link also opens
+the code entry screen if you use another browser or close the original page.
 The link and code must be used together within 15 minutes. Only the latest
 request is valid. Five incorrect code attempts invalidate a request, and
 requests and verification attempts are also rate limited by client IP.
