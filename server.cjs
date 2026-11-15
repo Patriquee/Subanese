@@ -582,13 +582,14 @@ const server = http.createServer(async (request, response) => {
       fail('Not found.',404);
     }
 
-    if (request.method === 'POST' && ['/api/auth/admin/forgot-password', '/api/auth/admin/reset-password'].includes(pathname)) {
+    if (request.method === 'POST' && ['/api/auth/admin/forgot-password', '/api/auth/admin/verify-code', '/api/auth/admin/reset-password'].includes(pathname)) {
       const body = await readBody(request);
       try {
         if (pathname.endsWith('/forgot-password')) {
-          await adminAuth.requestReset(body.email, request.socket.remoteAddress);
-          return send({ok:true, message:'If this email matches the administrator account, a reset link and code will be sent.'});
+          const token = await adminAuth.requestReset(body.email, request.socket.remoteAddress);
+          return send({ok:true, token, message:'If this email matches the administrator account, a reset link and code will be sent.'});
         }
+        if (pathname.endsWith('/verify-code')) return send({ok:true, grant:adminAuth.verifyCode(body, request.socket.remoteAddress)});
         adminAuth.reset(body, request.socket.remoteAddress);
         return send({ok:true}, 200, {'Set-Cookie':'sid=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0'});
       } catch (error) { fail(error.message, error.status || 400); }
@@ -3358,23 +3359,38 @@ async function adminPage() {
       '</section>';
 
     const resetToken = new URLSearchParams(location.hash.split('?')[1] || '').get('reset');
-    function recoveryForm(token) {
+    function recoveryForm(token, step = token ? 'code' : 'email', grant) {
       $('#login').hidden = true;
-      $('#admin-recovery').innerHTML = token
-        ? '<h3>Choose a new password</h3><p>Enter the six-digit code from your email.</p><form id="admin-recovery-form"><label>Email code<input name="code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" required></label><label>New password<input name="password" type="password" minlength="12" maxlength="128" autocomplete="new-password" required></label><label>Confirm new password<input name="confirm" type="password" autocomplete="new-password" required></label><button class="btn">Reset password</button><p role="status"></p></form>'
-        : '<h3>Reset administrator password</h3><form id="admin-recovery-form"><label>Recovery email<input name="email" type="email" autocomplete="email" required></label><button class="btn">Email reset link and code</button><p role="status"></p></form>';
+      $('#forgot-admin-password').hidden = true;
+      $('#admin-login-title').textContent = {email:'Forgot password', code:'Enter email code', password:'New password', done:'Password reset'}[step];
+      $('#admin-login-title').nextElementSibling.textContent = {email:'Enter your recovery email to receive a link and code.',code:'Enter the six-digit code sent to your email. It expires in 15 minutes.',password:'Choose a new password with at least 12 characters.',done:'Your password has changed. Log in with your new password.'}[step];
+      const fields = {
+        email:'<label>Recovery email<input name="email" type="email" autocomplete="email" required></label>',
+        code:'<label>Email code<input name="code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" required></label>',
+        password:'<label>New password<input name="password" type="password" minlength="12" maxlength="128" autocomplete="new-password" required></label><label>Confirm new password<input name="confirm" type="password" minlength="12" maxlength="128" autocomplete="new-password" required></label>'
+      };
+      $('#admin-recovery').innerHTML = step === 'done'
+        ? '<button type="button" id="recovery-login" class="btn">Log in</button>'
+        : '<p class="small">Step ' + ({email:1,code:2,password:3}[step]) + ' of 3</p><form id="admin-recovery-form">' + fields[step] + '<button class="btn">' + ({email:'Send link and code',code:'Verify code',password:'Reset password'}[step]) + '</button><p role="status"></p></form><button type="button" id="recovery-back" class="btn secondary">' + (step === 'email' ? 'Back to log in' : 'Request a new code') + '</button>';
+      if (step === 'done') {
+        $('#recovery-login').onclick = () => adminPage();
+        $('#recovery-login').focus();
+        return;
+      }
+      $('#recovery-back').onclick = () => step === 'email' ? adminPage() : recoveryForm();
+      $('#admin-recovery-form input').focus();
       $('#admin-recovery-form').onsubmit = async event => {
         event.preventDefault();
         const form = event.currentTarget, button = form.querySelector('button'), status = form.querySelector('[role="status"]');
         const values = Object.fromEntries(new FormData(form));
-        if (token && values.password !== values.confirm) { status.textContent = 'Passwords do not match.'; return; }
+        if (step === 'password' && values.password !== values.confirm) { status.textContent = 'Passwords do not match.'; return; }
         button.disabled = true;
         try {
-          const result = await api('/auth/admin/' + (token ? 'reset-password' : 'forgot-password'), 'POST', {...values, token});
-          if (token) {
-            history.replaceState(null, '', '#/admin');
-            await adminPage(); toast('Password changed. Sign in with your username and new password.');
-          } else status.textContent = result.message;
+          const action = {email:'forgot-password',code:'verify-code',password:'reset-password'}[step];
+          const result = await api('/auth/admin/' + action, 'POST', {...values, token, grant});
+          if (step === 'email') recoveryForm(result.token, 'code');
+          else if (step === 'code') recoveryForm(token, 'password', result.grant);
+          else { form.reset(); recoveryForm(null, 'done'); }
         } catch (error) { status.textContent = error.message; }
         finally { button.disabled = false; }
       };

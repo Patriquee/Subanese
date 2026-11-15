@@ -46,3 +46,16 @@ test('unknown emails do not send and new requests invalidate prior links; expiry
   f.advance(); assert.throws(()=>f.auth.reset({token:newer,code:newCode,password:'long enough password'},'other'),/expired/);
   f.db.close();
 });
+test('separate code verification authorizes new password and the grant works once',async()=>{
+  const f=fixture();
+  const token=await f.auth.requestReset('admin@example.com','ip');
+  const code=/code: (\d{6})/.exec(f.mail.text)[1];
+  for(let i=0;i<4;i++) assert.throws(()=>f.auth.verifyCode({token,code:'000000'},'ip'),/invalid/);
+  const grant=f.auth.verifyCode({token,code},'ip');
+  assert.throws(()=>f.auth.verifyCode({token,code},'ip'),/invalid/);
+  assert.throws(()=>f.auth.reset({grant:'invalid',password:'new secure password'},'ip'),/invalid/);
+  f.auth.reset({grant,password:'new secure password'},'ip');
+  assert.throws(()=>f.auth.reset({grant,password:'new secure password'},'ip'),/invalid/);
+  assert.equal(f.db.prepare('SELECT count(*) AS n FROM sessions').get().n,0);
+  f.db.close();
+});
