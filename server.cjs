@@ -74,17 +74,32 @@ db.exec(`
 
 db.exec(`CREATE TABLE IF NOT EXISTS customers (id TEXT PRIMARY KEY, name TEXT NOT NULL, email TEXT NOT NULL UNIQUE, salt TEXT NOT NULL, password TEXT NOT NULL, created TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS customer_sessions (token TEXT PRIMARY KEY, customer_id TEXT NOT NULL, expires INTEGER NOT NULL);`);
-if (!db.prepare("PRAGMA table_info(customers)").all().some(column => column.name === 'id_number')) db.exec("ALTER TABLE customers ADD COLUMN id_number TEXT NOT NULL DEFAULT ''");
 if (!db.prepare("PRAGMA table_info(orders)").all().some(column => column.name === 'customer_id')) db.exec("ALTER TABLE orders ADD COLUMN customer_id TEXT");
 db.exec("CREATE INDEX IF NOT EXISTS orders_customer_id ON orders(customer_id)");
 if (!db.prepare('PRAGMA table_info(customers)').all().some(column => column.name === 'profile_image')) db.exec("ALTER TABLE customers ADD COLUMN profile_image TEXT NOT NULL DEFAULT ''");
 if (!db.prepare('PRAGMA table_info(admin)').all().some(column => column.name === 'display_name')) db.exec("ALTER TABLE admin ADD COLUMN display_name TEXT NOT NULL DEFAULT ''");
-for (const [column, fallback] of [['phone', ''], ['preferred_contact', 'email']]) {
+for (const [column, fallback] of [['phone', ''], ['preferred_contact', 'email'], ['gender', ''], ['location', '']]) {
   if (!db.prepare('PRAGMA table_info(customers)').all().some(item => item.name === column)) db.exec("ALTER TABLE customers ADD COLUMN " + column + " TEXT NOT NULL DEFAULT '" + fallback + "'");
+}
+if (!db.prepare('PRAGMA table_info(customers)').all().some(column => column.name === 'birth_year')) {
+  db.exec('ALTER TABLE customers ADD COLUMN birth_year INTEGER');
+}
+function customerProfileDetails(body) {
+  const gender = body.gender ?? '';
+  if (!['', 'Woman', 'Man', 'Non-binary', 'Self-described', 'Prefer not to say'].includes(gender)) fail('Choose a gender from the list.');
+  const year = body.birth_year;
+  const currentYear = Number(new Intl.DateTimeFormat('en', { timeZone: 'Africa/Nairobi', year: 'numeric' }).format(new Date()));
+  const birthYear = year == null || year === '' ? null : Number(year);
+  if (birthYear !== null && (!['string', 'number'].includes(typeof year) || !/^\d{4}$/.test(String(year)) || birthYear < 1900 || birthYear > currentYear)) {
+    fail('Enter a valid four-digit year of birth.');
+  }
+  const location = body.location ?? '';
+  if (typeof location !== 'string' || location.trim().length > 100) fail('Enter a location up to 100 characters.');
+  return [gender, birthYear, location.trim()];
 }
 function signedInCustomer(request) {
   const token = /(?:^|;\s*)customer_sid=([^;]+)/.exec(request.headers.cookie || '')?.[1];
-  return token ? db.prepare("SELECT c.id, c.name, c.email, c.id_number, c.profile_image, c.phone, c.preferred_contact FROM customers c JOIN customer_sessions s ON s.customer_id = c.id WHERE s.token = ? AND s.expires > ?").get(token, Date.now()) : undefined;
+  return token ? db.prepare("SELECT c.id, c.name, c.email, c.gender, c.birth_year, c.location, c.profile_image, c.phone, c.preferred_contact FROM customers c JOIN customer_sessions s ON s.customer_id = c.id WHERE s.token = ? AND s.expires > ?").get(token, Date.now()) : undefined;
 }
 
 // Keep existing orders while adding delivery pin coordinates.
@@ -541,11 +556,12 @@ const server = http.createServer(async (request, response) => {
         const body = await readBody(request), address = email(body.email).toLowerCase(), password = text(body.password,'password',128);
         let customer;
         if (action === 'register') {
-          const name = text(body.name,'name',100), idNumber = text(body.id_number,'ID number (maximum 8 characters)',8);
+          const name = text(body.name,'name',100);
+          const profile = customerProfileDetails(body);
           if (password.length < 12) fail('Use at least 12 characters for your password.');
           if (db.prepare('SELECT 1 FROM customers WHERE email = ?').get(address)) fail('Unable to create this account. Try signing in.',409);
           const salt=uid();customer={id:uid(),name,email:address};
-          db.prepare('INSERT INTO customers (id,name,email,salt,password,created,id_number) VALUES (?,?,?,?,?,?,?)').run(customer.id,name,address,salt,hash(password,salt).toString('hex'),new Date().toISOString(),idNumber);
+          db.prepare('INSERT INTO customers (id,name,email,salt,password,created,gender,birth_year,location) VALUES (?,?,?,?,?,?,?,?,?)').run(customer.id,name,address,salt,hash(password,salt).toString('hex'),new Date().toISOString(),...profile);
         } else {
           const record=db.prepare('SELECT * FROM customers WHERE email = ?').get(address);
           const candidate=hash(password,record?.salt || 'missing-customer');
@@ -580,7 +596,9 @@ const server = http.createServer(async (request, response) => {
           db.prepare('UPDATE customers SET profile_image = ? WHERE id = ?').run(image,customer.id);
           return send({ok:true});
         }
-        db.prepare('UPDATE customers SET id_number = ? WHERE id = ?').run(text(body.id_number,'ID number (maximum 8 characters)',8),customer.id);return send({ok:true});
+        const profile = customerProfileDetails({ ...customer, ...body });
+        db.prepare('UPDATE customers SET gender = ?, birth_year = ?, location = ? WHERE id = ?').run(...profile, customer.id);
+        return send({ok:true});
       }
       fail('Not found.',404);
     }
@@ -695,7 +713,6 @@ const server = http.createServer(async (request, response) => {
 
       const customer = signedInCustomer(request);
       if (!customer) fail("Sign in or create an account before placing an order.", 401);
-      if (!customer.id_number) fail("Add your ID number in My account before placing an order.", 403);
       const name = text(body.name, "name", 100);
       const customerEmail = email(body.email);
       const phone = text(body.phone, "phone", 40);
@@ -952,6 +969,11 @@ const server = http.createServer(async (request, response) => {
     // Protected administrator endpoints.
     if (pathname.startsWith("/api/admin")) {
       requireAdmin(request);
+      if (pathname === '/api/admin/users' && request.method === 'GET') {
+        return send(db.prepare(
+          'SELECT name, email, phone, gender, birth_year, location, created FROM customers ORDER BY created DESC, id DESC'
+        ).all());
+      }
       if (pathname === '/api/admin/credentials' && request.method === 'PATCH') {
         adminAuth.limit('credentials:' + request.socket.remoteAddress, 10);
         const body = await readBody(request);
@@ -2883,13 +2905,25 @@ async function refreshCustomerAccountLink() {
   catch { updateCustomerAccountLink(null); }
 }
 
+function customerProfileFields(customer = {}) {
+  const currentYear = new Intl.DateTimeFormat('en', { timeZone: 'Africa/Nairobi', year: 'numeric' }).format(new Date());
+  return '<label>Gender<select name="gender"><option value="">Select if you wish</option>' +
+    ['Woman', 'Man', 'Non-binary', 'Self-described', 'Prefer not to say'].map(gender =>
+      '<option' + (customer.gender === gender ? ' selected' : '') + '>' + gender + '</option>'
+    ).join('') + '</select></label>' +
+    '<label>Year of birth<input name="birth_year" type="number" min="1900" max="' + currentYear +
+    '" autocomplete="bday-year" value="' + escapeHTML(String(customer.birth_year ?? '')) + '"></label>' +
+    '<label>Location<input name="location" maxlength="100" autocomplete="address-level2" placeholder="Town or city" value="' +
+    escapeHTML(customer.location || '') + '"></label>';
+}
+
 async function customerAccountPage(register = false) {
   let account;
   try { account = await api('/customer/account'); }
   catch(error) { if(error.message !== 'Sign in to view your account.') throw error; }
   updateCustomerAccountLink(account?.customer);
   if (!account) {
-    main.innerHTML='<section class="section account-auth"><h1>'+ (register?'Create your account.':'Welcome back.') +'</h1><p>Sign in to view your account details, track orders, and see your history.</p><form id="account-auth-form" class="panel">'+(register?'<label>Name<input name="name" autocomplete="name" maxlength="100" required></label><label>ID number<input name="id_number" maxlength="8" autocomplete="off" required></label><p class="small">Maximum 8 characters.</p>':'')+'<label>Email<input name="email" type="email" autocomplete="email" maxlength="254" required></label><label>Password<input name="password" type="password" autocomplete="'+(register?'new-password':'current-password')+'" '+(register?'minlength="12"':'')+' maxlength="128" required></label><p id="account-error" class="error" role="alert"></p><button class="btn">'+(register?'Create account':'Sign in')+'</button></form><p>'+(register?'<a href="#/account">Already have an account? Sign in</a>':'<a href="#/register">Create an account</a>')+'</p></section>';
+    main.innerHTML='<section class="section account-auth"><h1>'+ (register?'Create your account.':'Welcome back.') +'</h1><p>Sign in to view your account details, track orders, and see your history.</p><form id="account-auth-form" class="panel">'+(register?'<label>Name<input name="name" autocomplete="name" maxlength="100" required></label>'+customerProfileFields()+'':'')+'<label>Email<input name="email" type="email" autocomplete="email" maxlength="254" required></label><label>Password<input name="password" type="password" autocomplete="'+(register?'new-password':'current-password')+'" '+(register?'minlength="12"':'')+' maxlength="128" required></label><p id="account-error" class="error" role="alert"></p><button class="btn">'+(register?'Create account':'Sign in')+'</button></form><p>'+(register?'<a href="#/account">Already have an account? Sign in</a>':'<a href="#/register">Create an account</a>')+'</p></section>';
     $('#account-auth-form').onsubmit=async event=>{event.preventDefault();const button=event.submitter;button.disabled=true;try{await api('/customer/'+(register?'register':'login'),'POST',Object.fromEntries(new FormData(event.target)));if(register)location.hash='#/account';else await customerAccountPage();}catch(error){$('#account-error').textContent=error.message;}finally{if(button.isConnected)button.disabled=false;}};
     return;
   }
@@ -2919,7 +2953,7 @@ async function customerAccountPage(register = false) {
     target.innerHTML = customerDashboard(orders,cakes);
     return;
   }
-  target.innerHTML='<div class="panel"><h2>Account details</h2><p><strong>Name:</strong> '+escapeHTML(customer.name)+'</p><p><strong>Email:</strong> '+escapeHTML(customer.email)+'</p><p><strong>ID number:</strong> '+(customer.id_number?'Ending '+escapeHTML(customer.id_number.slice(-3)):'Not added')+'</p><a class="btn" href="#/account?view=tracking">Track my orders &rarr;</a></div>';
+  target.innerHTML='<div class="panel"><h2>Account details</h2><p><strong>Name:</strong> '+escapeHTML(customer.name)+'</p><p><strong>Email:</strong> '+escapeHTML(customer.email)+'</p><a class="btn" href="#/account?view=tracking">Track my orders &rarr;</a></div>';
   target.insertAdjacentHTML('beforeend', '<form id="profile-photo-form" class="panel"><label>Profile picture<input type="file" id="profile-photo-file" accept="image/jpeg,image/png,image/webp"></label><p class="small">Choose a photo, then adjust the crop before saving. JPG, PNG or WebP up to 10 MB.</p><div id="profile-crop-editor" hidden><canvas id="profile-crop-preview" width="400" height="400" role="img" aria-label="Profile picture crop preview"></canvas><div class="profile-crop-controls"><label>Zoom<input id="profile-crop-zoom" type="range" min="1" max="3" step="0.01" value="1"></label><label>Horizontal position<input id="profile-crop-x" type="range" min="0" max="100" value="50"></label><label>Vertical position<input id="profile-crop-y" type="range" min="0" max="100" value="50"></label><button type="button" class="btn secondary" id="profile-crop-reset">Reset crop</button></div></div><p class="error" role="alert"></p><button id="profile-photo-save" class="btn" disabled>Save picture</button></form>');
   setupProfileCrop(customer.profile_image);
   target.insertAdjacentHTML('beforeend', '<form id="contact-preferences-form" class="panel"><h3>Contact preferences</h3><label>Phone number<div class="phone-country-fields"><details class="phone-country-dropdown"><summary id="phone-country-label">Choose country</summary><div class="phone-country-options"><input id="phone-country-search" type="search" placeholder="Search country or calling code" aria-label="Search phone countries" autocomplete="off"><select id="phone-country" aria-label="Phone country" hidden></select><div id="phone-country-list" aria-label="Countries"></div></div></details><span id="phone-country-code" aria-label="Country calling code">+254</span><input id="phone-national-number" type="tel" autocomplete="tel-national" maxlength="20" placeholder="712 345 678" aria-label="Phone number"></div></label><label>Preferred contact method<select name="preferred_contact">' + [['email','Email'],['whatsapp','WhatsApp'],['sms','SMS']].map(([value,label]) => '<option value="' + value + '"' + ((customer.preferred_contact || 'email') === value ? ' selected' : '') + '>' + label + '</option>').join('') + '</select></label><p class="error" role="alert"></p><button class="btn">Save contact preferences</button></form>');
@@ -2991,7 +3025,23 @@ async function customerAccountPage(register = false) {
     }
     catch(error) {event.target.querySelector('.error').textContent = error.message; button.disabled = false;}
   };
-  if(!customer.id_number){target.innerHTML+='<form id="complete-id" class="panel"><label>ID number<input name="id_number" maxlength="8" required></label><p class="small">Add up to 8 characters before ordering.</p><p class="error" id="id-error" role="alert"></p><button class="btn">Save ID number</button></form>';$('#complete-id').onsubmit=async event=>{event.preventDefault();try{await api('/customer/profile','PATCH',Object.fromEntries(new FormData(event.target)));await customerAccountPage();}catch(error){$('#id-error').textContent=error.message;}};}
+  target.insertAdjacentHTML('beforeend', '<form id="customer-profile-details" class="panel"><h3>Profile details</h3>' +
+    customerProfileFields(customer) + '<p role="status"></p><button class="btn">Save profile details</button></form>');
+  $('#customer-profile-details').onsubmit = async event => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const button = event.submitter;
+    const status = form.querySelector('[role="status"]');
+    button.disabled = true;
+    try {
+      await api('/customer/profile', 'PATCH', Object.fromEntries(new FormData(form)));
+      status.textContent = 'Profile details saved.';
+    } catch (error) {
+      status.textContent = error.message;
+    } finally {
+      button.disabled = false;
+    }
+  };
 }
 function setupProfileCrop(currentImage) {
   const form = $('#profile-photo-form');
@@ -3230,6 +3280,42 @@ async function readAdminImage(file, fallback = '') {
     reader.onerror = () => reject(Error('Could not read image.'));
     reader.readAsDataURL(file);
   });
+}
+
+async function adminUsersPage() {
+  const host = $('#admin-users-results');
+  const search = $('#admin-users-search');
+  try {
+    const users = await api('/admin/users');
+    const currentYear = Number(new Intl.DateTimeFormat('en', { timeZone: 'Africa/Nairobi', year: 'numeric' }).format(new Date()));
+    const dateFormat = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' });
+    function renderUsers() {
+      const query = search.value.trim().toLowerCase();
+      const matches = users.filter(user => [user.name, user.email, user.phone, user.location].some(
+        value => (value || '').toLowerCase().includes(query)
+      ));
+      if (!matches.length) {
+        host.textContent = users.length ? 'No users match your search.' : 'No users have registered yet.';
+        return;
+      }
+      host.innerHTML = '<p class="small">' + matches.length + ' of ' + users.length +
+        ' registered users</p><div class="table"><table><thead><tr>' +
+        '<th scope="col">Name</th><th scope="col">Email</th><th scope="col">Phone</th><th scope="col">Gender</th><th scope="col">Birth year</th><th scope="col">Age this year</th><th scope="col">Location</th><th scope="col">Joined</th>' +
+        '</tr></thead><tbody>' + matches.map(user => {
+          const joined = new Date(user.created);
+          const demographics = [user.gender, user.birth_year, user.birth_year ? currentYear - user.birth_year : null, user.location];
+          const cells = demographics.map(value => '<td>' + escapeHTML(String(value ?? '') || '—') + '</td>').join('');
+          return '<tr><td>' + escapeHTML(user.name) + '</td><td>' + escapeHTML(user.email) +
+            '</td><td>' + escapeHTML(user.phone || '—') + '</td>' + cells + '<td>' +
+            escapeHTML(Number.isNaN(joined.getTime()) ? '—' : dateFormat.format(joined)) + '</td></tr>';
+        }).join('') + '</tbody></table></div>';
+    }
+    search.addEventListener('input', renderUsers);
+    search.disabled = false;
+    renderUsers();
+  } catch {
+    host.textContent = 'Could not load users. Reload the page to try again.';
+  }
 }
 
 async function financePage() {
@@ -3475,21 +3561,28 @@ async function adminPage() {
   }
 
   const requestedView = new URLSearchParams(location.hash.split('?')[1] || '').get('view') || 'home';
-  const view = ['home', 'dashboard', 'orders', 'cakes', 'transactions', 'finance', 'items'].includes(requestedView) ? requestedView : 'home';
+  const adminViews = {
+    home: 'Home', dashboard: 'Analytics', orders: 'Orders', users: 'Users',
+    cakes: 'Custom cakes', transactions: 'Transactions', finance: 'Finance', items: 'Items'
+  };
+  const view = Object.hasOwn(adminViews, requestedView) ? requestedView : 'home';
   const activeOrders = data.orders.filter(order => !['completed', 'cancelled'].includes(order.status)).length;
   main.innerHTML =
     '<div class="admin-layout"><aside class="admin-sidebar">' +
       '<a class="brand site-brand admin-brand" href="#/admin?view=home" aria-label="Subanese administration"><span class="brand-logo"><img src="/brand/logo.jpeg" alt="" width="80" height="80"></span><span class="brand-wordmark">Subanese<small>WE BAKE, YOU TAKE</small></span></a><p class="eyebrow">Administration</p>' +
       '<nav aria-label="Admin navigation">' +
-      [['home','Home'],['dashboard','Analytics'],['orders','Orders'],['cakes','Custom cakes'],['transactions','Transactions'],['finance','Finance'],['items','Items'],['storefront','Storefront']].map(([key,label]) =>
+      [...Object.entries(adminViews), ['storefront', 'Storefront']].map(([key,label]) =>
         (key === 'storefront'
           ? '<a href="/#/shop" target="_blank" rel="noopener noreferrer" aria-label="Storefront (opens in a new tab)">' + label + ' &nearr;</a>'
           : '<a href="#/admin?view=' + key + '"' + (view === key ? ' aria-current="page"' : '') + '>' + label + '</a>')
       ).join('') + '<button id="logout" type="button" class="admin-signout">Sign out</button></nav><a class="admin-store-link" href="/#/shop" target="_blank" rel="noopener noreferrer">View storefront &nearr;</a></aside>' +
       '<section class="admin-content section">' +
-      '<div class="admin-toolbar"><strong class="admin-page-title">' + escapeHTML({home:'Home',dashboard:'Analytics',orders:'Orders',cakes:'Custom cakes',transactions:'Transactions',finance:'Finance',items:'Items'}[view]) + '</strong><button type="button" class="theme-toggle" data-theme-toggle aria-label="Switch color theme"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M20.9 13A9 9 0 0 1 11 3.1 9 9 0 1 0 20.9 13Z"/></svg></button><details id="admin-profile-menu" class="profile-menu"><summary aria-label="Open admin profile"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21v-2a8 8 0 0 1 16 0v2"/></svg><span class="admin-display-name">Admin</span></summary><div class="profile-dropdown"><strong>' + escapeHTML(data.profile.name || data.profile.username) + '</strong><p class="small">Administrator</p><button id="view-admin-profile" type="button">Account details</button></div></details></div>' +
+      '<div class="admin-toolbar"><strong class="admin-page-title">' + escapeHTML(adminViews[view]) + '</strong><button type="button" class="theme-toggle" data-theme-toggle aria-label="Switch color theme"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M20.9 13A9 9 0 0 1 11 3.1 9 9 0 1 0 20.9 13Z"/></svg></button><details id="admin-profile-menu" class="profile-menu"><summary aria-label="Open admin profile"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21v-2a8 8 0 0 1 16 0v2"/></svg><span class="admin-display-name">Admin</span></summary><div class="profile-dropdown"><strong>' + escapeHTML(data.profile.name || data.profile.username) + '</strong><p class="small">Administrator</p><button id="view-admin-profile" type="button">Account details</button></div></details></div>' +
       '<section id="admin-profile" class="panel" hidden tabindex="-1"><div class="row"><h2>User profile</h2><button id="close-admin-profile" class="btn secondary">Close profile</button></div><p>Username: ' + escapeHTML(data.profile.username) + '</p><p>Role: Administrator</p><form id="admin-name-form"><label>Admin name<input name="name" maxlength="100" required value="' + escapeHTML(data.profile.name || data.profile.username) + '"></label><p class="error" role="alert"></p><button class="btn">Save name</button></form><h3>Sign-in and recovery</h3><form id="admin-credentials-form"><label>Username<input name="username" required autocomplete="username" value="' + escapeHTML(data.profile.username) + '"></label><label>Recovery email<input name="email" type="email" required value="' + escapeHTML(data.profile.email) + '"></label><label>Current password<input name="currentPassword" type="password" autocomplete="current-password" required></label><button class="btn">Save sign-in details</button><p role="status"></p></form><button type="button" id="admin-change-password" class="btn secondary">Email password reset link and code</button><p id="admin-change-status" role="status"></p></section>' +
       '<section id="admin-home"' + (view === 'home' ? '' : ' hidden') + '>' + renderAdminHome(data, products) + '</section>' +
+      (view === 'users' ? '<section id="admin-users"><h2>Registered users</h2>' +
+        '<div class="fields"><label>Search users<input id="admin-users-search" type="search" placeholder="Name, email, phone or location" disabled></label></div>' +
+        '<div id="admin-users-results" aria-live="polite">Loading users…</div></section>' : '') +
       '<section id="admin-cakes"' + (view === 'cakes' ? '' : ' hidden') + '><h2>Custom cake requests</h2><p>Review client ideas, reference images, and follow-up progress.</p><div class="fields"><label>Search requests<input id="cake-request-search" type="search" placeholder="Reference, client, flavour or requirements"></label><label>Status<select id="cake-request-status"><option value="">All statuses</option><option>new</option><option>reviewed</option><option>contacted</option><option>confirmed</option><option>preparing</option><option>ready</option><option>completed</option><option>cancelled</option><option>declined</option></select></label></div><div id="cake-request-list"></div></section>' +
       '<section id="admin-dashboard"' + (view === 'dashboard' ? '' : ' hidden') + '><div class="analytics-heading"><div><span class="eyebrow">Subanese administration</span><h2>Analytics</h2><p>Orders, collections, inventory, and recorded exceptions</p></div><div class="analytics-heading-actions"><a class="btn secondary" href="#/admin?view=finance">Finance records</a><button type="button" class="btn secondary" id="dashboard-export">Export CSV</button></div></div><div class="analytics-filters"><label>Period<select id="dashboard-period"><option value="0">All time</option><option value="7">Last 7 days</option><option value="30" selected>Last 30 days</option><option value="90">Last 90 days</option></select></label><label>Fulfillment<select id="dashboard-method"><option value="">All types</option><option value="pickup">Pickup</option><option value="delivery">Delivery</option></select></label><label>Order status<select id="dashboard-status"><option value="">All statuses</option><option>confirmed</option><option>preparing</option><option>ready</option><option>out for delivery</option><option>completed</option><option>cancelled</option></select></label><label class="analytics-search">Search<input id="dashboard-search" type="search" placeholder="Customer or order reference"></label><button type="button" class="btn secondary" id="dashboard-reset">Reset</button><label>Trend<select id="dashboard-metric"><option value="value">Order value</option><option value="count">Order volume</option></select></label><label>Group by<select id="dashboard-group"><option value="day">Day</option><option value="week">Week</option><option value="month">Month</option></select></label></div><div id="dashboard-results" aria-live="polite"></div></section>' +
       '<section id="admin-transactions"' + (view === 'transactions' ? '' : ' hidden') + '><div class="row"><h2>Transactions</h2><button type="button" id="export-transactions" class="btn secondary">Export CSV</button></div><p class="small">Exports the results matching your current search and status filters. Order ledger. Order status does not confirm payment or refunds.</p><div class="fields"><label>Search<input id="transaction-search" type="search" placeholder="Reference or customer"></label><label>Order status<select id="transaction-status"><option value="">All statuses</option>' + [...new Set(data.analytics.map(order => order.status))].map(status => '<option>' + escapeHTML(status) + '</option>').join('') + '</select></label></div><div id="transaction-results" aria-live="polite"></div></section>' +
@@ -3611,6 +3704,7 @@ async function adminPage() {
   $('#transaction-status').onchange = drawTransactions;
   drawTransactions();
   if (view === 'finance') await financePage();
+  if (view === 'users') await adminUsersPage();
   if(view==='items') {
     const params=new URLSearchParams(location.hash.split('?')[1]||'');
     const product=Number(params.get('product'));
