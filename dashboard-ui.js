@@ -38,6 +38,31 @@ function dashboardModel(allOrders, finance, filters={}, now=new Date()) {
  const cancelled=orders.filter(order=>order.status==='cancelled');
  return{paidByOrder:paid,active:orders.filter(order=>!['completed','cancelled'].includes(order.status)).length,awaiting:orders.filter(order=>order.status==='confirmed'),lowStock:products.filter(product=>product.stock<=5),orders,prior,period,group,metric:filters.metric==='count'?'count':'value',buckets:[...map.values()],quality,incompleteIds:incomplete.map(o=>o.id),unpaidIds:unpaid.map(o=>o.id),outstanding,received:receivedAmount,refunds:refundAmount,net:receivedAmount-refundAmount,paymentCount:payments.length,failed:payments.filter(p=>p.status==='failed'),pending:payments.filter(p=>p.status==='pending'),value:orderValue(orders),priorValue:orderValue(prior),completed:orders.filter(o=>o.status==='completed').length,completion:live(orders).length?orders.filter(o=>o.status==='completed').length/live(orders).length*100:0,cancelled:cancelled.length,cancelledValue:sum(cancelled,'total'),covered:live(orders).length-unpaid.length,coverage:live(orders).length?(live(orders).length-unpaid.length)/live(orders).length*100:0,cancelledUnrefunded:cancelled.reduce((total,order)=>total+Math.max(0,(paid.get(order.id)||0)-(refunded.get(order.id)||0)),0),topQuantity:[...top.values()].sort((a,b)=>b.quantity-a.quantity||b.value-a.value).slice(0,5),top:[...top.values()].sort((a,b)=>b.value-a.value).slice(0,5),invalidDates:allOrders.filter(matches).filter(o=>!Number.isFinite(Date.parse(o.created))).length};
 }
+function renderAnalyticsAgentReport(report) {
+ const count = new Intl.NumberFormat();
+ const currency = new Intl.NumberFormat('en-KE', { style: 'currency', currency: report.currency });
+ const money = value => currency.format(value / report.minorUnit);
+ const period = (label, row) => '<tr><th scope="row">' + label + '</th><td>' +
+   escapeHTML(row.start) + ' to ' + escapeHTML(row.end) + '</td><td>' + count.format(row.orders) +
+   '</td><td>' + count.format(row.cancelled) + '</td><td>' + money(row.order_value_minor) +
+   '</td><td>' + count.format(row.registrations) + '</td></tr>';
+ const financeLabels = {
+   sales: 'Order value', received: 'Recorded receipts', refunded: 'Refunds', netCollections: 'Net collections',
+   expenses: 'Net expenses', cashSurplus: 'Cash surplus', outstanding: 'Outstanding order value',
+   wasteCost: 'Waste cost', productionCost: 'Production cost'
+ };
+ const metric = (label, value) => '<div><dt>' + label + '</dt><dd>' + value + '</dd></div>';
+ return '<section class="analytics-panel"><h3>Source figures</h3><p>Order and registration dates use Nairobi time. Order value excludes cancellations.</p>' +
+   '<div class="table"><table><thead><tr><th scope="col">Period</th><th scope="col">Dates</th><th scope="col">Orders</th>' +
+   '<th scope="col">Cancelled</th><th scope="col">Order value</th><th scope="col">Registrations</th></tr></thead><tbody>' +
+   period('Selected', report.current) + period('Previous', report.previous) + '</tbody></table></div>' +
+   '<h4>All-time customer counts</h4><dl>' + metric('Registered users', count.format(report.usersAllTime.registered)) +
+   metric('Customers with orders', count.format(report.usersAllTime.orderingCustomers)) +
+   metric('Repeat customers', count.format(report.usersAllTime.repeatCustomers)) + '</dl>' +
+   '<h4>All-time finance totals</h4><dl>' + Object.entries(financeLabels).map(([key, label]) =>
+     metric(label, money(report.financeAllTimeMinor[key]))).join('') + '</dl></section>';
+}
+
 function renderUserAnalysis({ total, recent, genders, locations }) {
  const count = new Intl.NumberFormat();
  const metric = (label, value) => '<article class="analytics-kpi"><p>' + label + '</p><strong>' +

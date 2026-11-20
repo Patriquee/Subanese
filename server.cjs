@@ -419,6 +419,7 @@ function requireAdmin(request) {
 }
 
 const finance = require('./finance.cjs').createFinance(db, {currency: CURRENCY, deliveryFee: DELIVERY_FEE});
+const { analyticsSnapshot, askAnalytics } = require('./analytics-agent.cjs');
 
 const loginAttempts = new Map();
 
@@ -992,6 +993,18 @@ const server = http.createServer(async (request, response) => {
     // Protected administrator endpoints.
     if (pathname.startsWith("/api/admin")) {
       requireAdmin(request);
+      if (pathname === '/api/admin/ask-analytics' && request.method === 'POST') {
+        adminAuth.limit('ask-analytics', 20);
+        const body = await readBody(request);
+        const question = text(body.question, 'analytics question', 800);
+        if (![7, 30, 90].includes(body.days)) fail('Choose a valid reporting period.');
+        const report = analyticsSnapshot(db, finance, body.days);
+        const result = await askAnalytics(question, report, {
+          apiKey: process.env.OPENAI_API_KEY,
+          model: process.env.OPENAI_ANALYTICS_MODEL || 'gpt-5-mini'
+        });
+        return send({ ...result, report });
+      }
       if (pathname === '/api/admin/users' && request.method === 'GET') {
         return send(db.prepare(
           'SELECT name, email, phone, gender, birth_year, location, created FROM customers ORDER BY created DESC, id DESC'
@@ -1972,6 +1985,8 @@ body:not(.admin-view) .store-card .store-allergens { font-size: 12px; line-heigh
 .analytics-tabs { display: flex; flex-wrap: wrap; gap: 8px; }
 .analytics-tabs [aria-current="page"] { font-weight: 700; text-decoration: underline; text-underline-offset: 4px; }
 .analytics-print-context { display: none; }
+.analytics-agent-form textarea { min-height: 96px; }
+.analytics-agent-answer { white-space: pre-wrap; overflow-wrap: anywhere; }
 @media print {
   @page analytics-report { size: A4; margin: 12mm; }
   body:has(#analytics-report-header) { page: analytics-report; background: white; color: #172033; }
@@ -1979,7 +1994,7 @@ body:not(.admin-view) .store-card .store-allergens { font-size: 12px; line-heigh
   body:has(#analytics-report-header) .admin-sidebar,
   body:has(#analytics-report-header) .admin-toolbar,
   body:has(#analytics-report-header) .admin-content > :not(#analytics-report-header, .analytics-print-section),
-  body:has(#analytics-report-header) :is(.analytics-heading-actions, .analytics-filters, .finance-entry, .finance-records, .finance-heading > a) { display: none !important; }
+  body:has(#analytics-report-header) :is(.analytics-heading-actions, .analytics-filters, .analytics-agent-form, .finance-entry, .finance-records, .finance-heading > a) { display: none !important; }
   body:has(#analytics-report-header) :is(#main, .admin-layout, .admin-content) { display: block; width: auto; max-width: none; margin: 0; padding: 0; }
   #analytics-report-header, .analytics-print-section { --ink: #172033; --cream: white; --line: #dbe2ec; color-scheme: light; print-color-adjust: exact; }
   .analytics-print-context { display: block; margin-bottom: 12px; }
@@ -3489,6 +3504,38 @@ async function adminUserAnalysisPage() {
   }
 }
 
+function setupAnalyticsAgent(pdf) {
+  const form = $('#analytics-agent-form');
+  const status = $('#analytics-agent-status');
+  const results = $('#analytics-agent-results');
+  form.onsubmit = async event => {
+    event.preventDefault();
+    const submit = form.querySelector('button');
+    const values = new FormData(form);
+    const question = values.get('question').trim();
+    submit.disabled = true;
+    status.textContent = 'Preparing analysis…';
+    try {
+      const result = await api('/admin/ask-analytics', 'POST', { question, days: Number(values.get('days')) });
+      results.innerHTML = renderAnalyticsAgentReport(result.report);
+      const heading = document.createElement('h3');
+      heading.textContent = question;
+      const answer = document.createElement('p');
+      answer.className = 'analytics-agent-answer';
+      answer.textContent = result.answer || (result.status === 'unconfigured'
+        ? 'Set OPENAI_API_KEY on the server to enable AI answers. The aggregate report is available below.'
+        : 'The AI service is unavailable. The aggregate report is available below.');
+      results.prepend(heading, answer);
+      status.textContent = 'Report ready.';
+      pdf.disabled = false;
+    } catch (error) {
+      status.textContent = error.message;
+    } finally {
+      submit.disabled = false;
+    }
+  };
+}
+
 async function financePage() {
   const data = await api('/admin/finance');
   const host = $('#finance-content');
@@ -3741,7 +3788,8 @@ async function adminPage() {
   const analyticsTab = view === 'dashboard' ? adminParams.get('tab') : null;
   const userAnalysis = analyticsTab === 'user-analysis';
   const financeAnalysis = analyticsTab === 'finance';
-  const analyticsOverview = view === 'dashboard' && !userAnalysis && !financeAnalysis;
+  const analyticsAgent = analyticsTab === 'ask';
+  const analyticsOverview = view === 'dashboard' && !userAnalysis && !financeAnalysis && !analyticsAgent;
   const activeOrders = data.orders.filter(order => !['completed', 'cancelled'].includes(order.status)).length;
   main.innerHTML =
     '<div class="admin-layout"><aside class="admin-sidebar">' +
@@ -3760,11 +3808,17 @@ async function adminPage() {
         '<div class="analytics-heading-actions"><nav class="analytics-tabs" aria-label="Analytics sections">' +
         '<a class="btn secondary" href="#/admin?view=dashboard"' + (analyticsOverview ? ' aria-current="page"' : '') + '>Overview</a>' +
         '<a class="btn secondary" href="#/admin?view=dashboard&amp;tab=finance"' + (financeAnalysis ? ' aria-current="page"' : '') + '>Finance</a>' +
-        '<a class="btn secondary" href="#/admin?view=dashboard&amp;tab=user-analysis"' + (userAnalysis ? ' aria-current="page"' : '') + '>Users</a></nav>' +
+        '<a class="btn secondary" href="#/admin?view=dashboard&amp;tab=user-analysis"' + (userAnalysis ? ' aria-current="page"' : '') + '>Users</a>' +
+        '<a class="btn secondary" href="#/admin?view=dashboard&amp;tab=ask"' + (analyticsAgent ? ' aria-current="page"' : '') + '>Ask Analytics</a></nav>' +
         (analyticsOverview ? '<button type="button" class="btn secondary" id="dashboard-export">Export CSV</button>' : '') +
         '<button type="button" class="btn secondary" id="analytics-export-pdf" disabled>Export PDF</button></div></div>' : '') +
       (userAnalysis ? '<section class="analytics-print-section" aria-labelledby="admin-user-analysis-title"><h2 id="admin-user-analysis-title">User Analysis</h2>' +
         '<div id="admin-user-analysis-results" aria-live="polite">Loading user analysis&hellip;</div></section>' : '') +
+      (analyticsAgent ? '<section class="analytics-print-section" aria-labelledby="analytics-agent-title"><h2 id="analytics-agent-title">Ask Analytics</h2>' +
+        '<form class="panel analytics-agent-form" id="analytics-agent-form"><label>Period<select name="days"><option value="7">Last 7 days</option><option value="30" selected>Last 30 days</option><option value="90">Last 90 days</option></select></label>' +
+        '<label>Question<textarea name="question" required maxlength="800" aria-describedby="analytics-agent-note" placeholder="How did orders and new registrations change compared with the previous period?"></textarea></label>' +
+        '<p id="analytics-agent-note" class="small">Uses aggregate order, finance, and registration data. Questions go to the AI provider, so leave out personal details.</p><button class="btn">Ask</button>' +
+        '<p role="status" id="analytics-agent-status"></p></form><div id="analytics-agent-results" aria-live="polite"></div></section>' : '') +
       (view === 'users' ? '<section id="admin-users"><h2>Registered users</h2>' +
         '<div class="fields"><label>Search users<input id="admin-users-search" type="search" placeholder="Name, email, phone or location" disabled></label></div>' +
         '<div id="admin-users-results" aria-live="polite">Loading users…</div></section>' : '') +
@@ -3896,10 +3950,11 @@ async function adminPage() {
   if (view === 'finance' || financeAnalysis) await financePage();
   if (view === 'users') await adminUsersPage();
   const reportReady = analyticsOverview || financeAnalysis || (userAnalysis && await adminUserAnalysisPage());
-  if (reportReady) {
-    pdf.disabled = false;
+  if (pdf) {
+    pdf.disabled = !reportReady;
     pdf.onclick = () => window.print();
   }
+  if (analyticsAgent) setupAnalyticsAgent(pdf);
   if(view==='items') {
     const params=new URLSearchParams(location.hash.split('?')[1]||'');
     const product=Number(params.get('product'));
