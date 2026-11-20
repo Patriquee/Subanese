@@ -1951,10 +1951,15 @@ body:not(.admin-view) .store-card .store-allergens { font-size: 12px; line-heigh
 
 
 .account-auth { max-width: 600px; margin-inline: auto; }
-.birth-date-entry { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: end; }
+.birth-date-entry { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: end; }
 .birth-date-entry label { min-width: 0; }
-.birth-date-entry input[type="date"] { grid-column: 1 / -1; }
-.birth-date-entry .birth-date-picker { position: absolute; inset: auto 0 0 auto; width: 1px; height: 1px; padding: 0; opacity: 0; pointer-events: none; }
+.birth-date-entry [data-birth-date-calendar] { display: grid; place-items: center; min-width: 44px; min-height: 44px; padding: 8px; }
+.birth-date-picker { width: min(390px, calc(100% - 32px)); }
+.birth-date-picker h2 { font-size: 22px; }
+.birth-date-options { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; max-height: 245px; overflow: auto; padding: 4px; }
+.birth-date-options.days { grid-template-columns: repeat(7, minmax(0, 1fr)); }
+.birth-date-options .btn { padding: 6px 2px; min-height: 36px; }
+.birth-date-actions { display: flex; justify-content: space-between; gap: 8px; margin-top: 12px; }
 .account-tabs { display: flex; flex-wrap: wrap; gap: 8px; border-bottom: 1px solid var(--line); padding-bottom: 12px; margin-bottom: 24px; }
 .account-tabs a { padding: 12px 16px; border-radius: 6px; }
 .account-tabs a[aria-current="page"] { background: var(--ink); color: var(--cream); }
@@ -2942,9 +2947,13 @@ function customerProfileFields(customer = {}) {
     '<div class="birth-date-entry"><label>Date of birth (DD/MM/YYYY)' +
     '<input name="birth_date" type="text" placeholder="DD/MM/YYYY" pattern="[0-9]{2}/[0-9]{2}/[0-9]{4}" maxlength="10" autocomplete="bday" value="' +
     escapeHTML((customer.birth_date || '').split('-').reverse().join('/')) + '"' + (savedYear ? ' aria-describedby="saved-birth-year"' : '') + '></label>' +
-    '<button type="button" class="btn secondary" data-birth-date-calendar>Calendar</button>' +
-    '<input class="birth-date-picker" type="date" min="1900-01-01" max="' + today +
-    '" form="" aria-label="Select date of birth" aria-hidden="true" tabindex="-1"></div>' +
+    '<button type="button" class="btn secondary" data-birth-date-calendar aria-label="Open date of birth calendar" aria-haspopup="dialog" aria-controls="birth-date-picker">' +
+    '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" aria-hidden="true">' +
+    '<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4m8-4v4"/></svg></button>' +
+    '<dialog id="birth-date-picker" class="birth-date-picker" data-today="' + today + '" aria-labelledby="birth-date-step">' +
+    '<h2 id="birth-date-step"></h2><div class="birth-date-options"></div>' +
+    '<div class="birth-date-actions"><button type="button" class="btn secondary" data-birth-date-back>Back</button>' +
+    '<button type="button" class="btn secondary" data-birth-date-cancel>Cancel</button></div></dialog></div>' +
     (savedYear ? '<small id="saved-birth-year">Saved birth year: ' + escapeHTML(String(savedYear)) + '</small>' : '') +
     '<label>Location<input name="location" maxlength="100" autocomplete="address-level2" placeholder="Town or city" value="' +
     escapeHTML(customer.location || '') + '"></label>';
@@ -2964,19 +2973,62 @@ function setupBirthDatePicker(form) {
   const field = form.elements.birth_date;
   const picker = form.querySelector('.birth-date-picker');
   const button = form.querySelector('[data-birth-date-calendar]');
-  button.onclick = () => {
-    picker.value = birthDateToISO(field.value);
-    try {
-      picker.showPicker();
-    } catch {
-      picker.classList.remove('birth-date-picker');
-      picker.removeAttribute('aria-hidden');
-      picker.removeAttribute('tabindex');
-      picker.focus();
+  const title = picker.querySelector('h2');
+  const options = picker.querySelector('.birth-date-options');
+  const back = picker.querySelector('[data-birth-date-back]');
+  const [currentYear, currentMonth, currentDay] = picker.dataset.today.split('-').map(Number);
+  const monthNames = new Intl.DateTimeFormat('en', { month: 'long', timeZone: 'UTC' });
+  let year, month;
+
+  function showChoices(heading, count, label, choose, goBack, initialIndex = 0, days = false) {
+    title.textContent = heading;
+    options.classList.toggle('days', days);
+    options.replaceChildren();
+    for (let index = 0; index < count; index++) {
+      const choice = document.createElement('button');
+      choice.type = 'button';
+      choice.className = 'btn secondary';
+      choice.textContent = label(index);
+      choice.onclick = () => choose(index);
+      options.append(choice);
     }
+    back.hidden = !goBack;
+    back.onclick = goBack;
+    (options.children[initialIndex] || options.firstElementChild).focus();
+  }
+
+  function showYears(preferredYear) {
+    showChoices('Choose a year', currentYear - 1899, index => currentYear - index, index => {
+      year = currentYear - index;
+      showMonths();
+    }, null, currentYear - preferredYear);
+  }
+
+  function showMonths(preferredMonth = 1) {
+    showChoices('Choose a month in ' + year, year === currentYear ? currentMonth : 12,
+      index => monthNames.format(new Date(Date.UTC(year, index, 1))), index => {
+        month = index + 1;
+        showDays();
+      }, () => showYears(year), preferredMonth - 1);
+  }
+
+  function showDays() {
+    const count = year === currentYear && month === currentMonth ? currentDay :
+      new Date(Date.UTC(year, month, 0)).getUTCDate();
+    const monthName = monthNames.format(new Date(Date.UTC(year, month - 1, 1)));
+    const twoDigits = value => String(value).padStart(2, '0');
+    showChoices('Choose a day in ' + monthName + ' ' + year, count, index => index + 1, index => {
+      field.value = [twoDigits(index + 1), twoDigits(month), year].join('/');
+      picker.close();
+    }, () => showMonths(month), 0, true);
+  }
+
+  button.onclick = () => {
+    picker.showModal();
+    showYears(Number(birthDateToISO(field.value).split('-')[0]));
   };
-  picker.onchange = () => { field.value = picker.value.split('-').reverse().join('/'); };
-  field.addEventListener('input', () => { picker.value = birthDateToISO(field.value); });
+  picker.querySelector('[data-birth-date-cancel]').onclick = () => picker.close();
+  picker.onclose = () => button.focus();
 }
 
 async function customerAccountPage(register = false) {
