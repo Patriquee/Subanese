@@ -997,6 +997,24 @@ const server = http.createServer(async (request, response) => {
           'SELECT name, email, phone, gender, birth_year, location, created FROM customers ORDER BY created DESC, id DESC'
         ).all());
       }
+      if (pathname === '/api/admin/user-analysis' && request.method === 'GET') {
+        const counts = db.prepare(`
+          SELECT COUNT(*) AS total,
+            COUNT(*) FILTER (WHERE date(created, '+3 hours') BETWEEN
+              date('now', '+3 hours', '-29 days') AND date('now', '+3 hours')) AS recent
+          FROM customers
+        `).get();
+        const genders = db.prepare(`
+          SELECT NULLIF(TRIM(gender), '') AS label, COUNT(*) AS count
+          FROM customers GROUP BY label ORDER BY count DESC, label
+        `).all();
+        const locations = db.prepare(`
+          SELECT MIN(TRIM(location)) AS label, COUNT(*) AS count
+          FROM customers WHERE TRIM(location) <> '' GROUP BY TRIM(location) COLLATE NOCASE
+          ORDER BY count DESC, label LIMIT 10
+        `).all();
+        return send({ ...counts, genders, locations });
+      }
       if (pathname === '/api/admin/credentials' && request.method === 'PATCH') {
         adminAuth.limit('credentials:' + request.socket.remoteAddress, 10);
         const body = await readBody(request);
@@ -1951,6 +1969,8 @@ body:not(.admin-view) .store-card .store-allergens { font-size: 12px; line-heigh
 
 
 .account-auth { max-width: 600px; margin-inline: auto; }
+.analytics-tabs { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+.analytics-tabs [aria-current="page"] { font-weight: 700; text-decoration: underline; text-underline-offset: 4px; }
 .birth-date-entry { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: end; }
 .birth-date-entry label { min-width: 0; }
 .birth-date-entry [data-birth-date-calendar] { display: grid; place-items: center; min-width: 44px; min-height: 44px; padding: 8px; }
@@ -3439,6 +3459,16 @@ async function adminUsersPage() {
   }
 }
 
+async function adminUserAnalysisPage() {
+  const host = $('#admin-user-analysis-results');
+  try {
+    const data = await api('/admin/user-analysis');
+    host.innerHTML = renderUserAnalysis(data);
+  } catch {
+    host.textContent = 'Could not load user analysis. Reload the page to try again.';
+  }
+}
+
 async function financePage() {
   const data = await api('/admin/finance');
   const host = $('#finance-content');
@@ -3681,12 +3711,14 @@ async function adminPage() {
     })[order.status] || [];
   }
 
-  const requestedView = new URLSearchParams(location.hash.split('?')[1] || '').get('view') || 'home';
+  const adminParams = new URLSearchParams(location.hash.split('?')[1] || '');
+  const requestedView = adminParams.get('view') || 'home';
   const adminViews = {
     home: 'Home', dashboard: 'Analytics', orders: 'Orders', users: 'Users',
     cakes: 'Custom cakes', transactions: 'Transactions', finance: 'Finance', items: 'Items'
   };
   const view = Object.hasOwn(adminViews, requestedView) ? requestedView : 'home';
+  const userAnalysis = view === 'dashboard' && adminParams.get('tab') === 'user-analysis';
   const activeOrders = data.orders.filter(order => !['completed', 'cancelled'].includes(order.status)).length;
   main.innerHTML =
     '<div class="admin-layout"><aside class="admin-sidebar">' +
@@ -3701,11 +3733,16 @@ async function adminPage() {
       '<div class="admin-toolbar"><strong class="admin-page-title">' + escapeHTML(adminViews[view]) + '</strong><button type="button" class="theme-toggle" data-theme-toggle aria-label="Switch color theme"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M20.9 13A9 9 0 0 1 11 3.1 9 9 0 1 0 20.9 13Z"/></svg></button><details id="admin-profile-menu" class="profile-menu"><summary aria-label="Open admin profile"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21v-2a8 8 0 0 1 16 0v2"/></svg><span class="admin-display-name">Admin</span></summary><div class="profile-dropdown"><strong>' + escapeHTML(data.profile.name || data.profile.username) + '</strong><p class="small">Administrator</p><button id="view-admin-profile" type="button">Account details</button></div></details></div>' +
       '<section id="admin-profile" class="panel" hidden tabindex="-1"><div class="row"><h2>User profile</h2><button id="close-admin-profile" class="btn secondary">Close profile</button></div><p>Username: ' + escapeHTML(data.profile.username) + '</p><p>Role: Administrator</p><form id="admin-name-form"><label>Admin name<input name="name" maxlength="100" required value="' + escapeHTML(data.profile.name || data.profile.username) + '"></label><p class="error" role="alert"></p><button class="btn">Save name</button></form><h3>Sign-in and recovery</h3><form id="admin-credentials-form"><label>Username<input name="username" required autocomplete="username" value="' + escapeHTML(data.profile.username) + '"></label><label>Recovery email<input name="email" type="email" required value="' + escapeHTML(data.profile.email) + '"></label><label>Current password<input name="currentPassword" type="password" autocomplete="current-password" required></label><button class="btn">Save sign-in details</button><p role="status"></p></form><button type="button" id="admin-change-password" class="btn secondary">Email password reset link and code</button><p id="admin-change-status" role="status"></p></section>' +
       '<section id="admin-home"' + (view === 'home' ? '' : ' hidden') + '>' + renderAdminHome(data, products) + '</section>' +
+      (view === 'dashboard' ? '<nav class="analytics-tabs" aria-label="Analytics sections">' +
+        '<a class="btn secondary" href="#/admin?view=dashboard"' + (userAnalysis ? '' : ' aria-current="page"') + '>Overview</a>' +
+        '<a class="btn secondary" href="#/admin?view=dashboard&amp;tab=user-analysis"' + (userAnalysis ? ' aria-current="page"' : '') + '>User Analysis</a></nav>' : '') +
+      (userAnalysis ? '<section aria-labelledby="admin-user-analysis-title"><h2 id="admin-user-analysis-title">User Analysis</h2>' +
+        '<div id="admin-user-analysis-results" aria-live="polite">Loading user analysis&hellip;</div></section>' : '') +
       (view === 'users' ? '<section id="admin-users"><h2>Registered users</h2>' +
         '<div class="fields"><label>Search users<input id="admin-users-search" type="search" placeholder="Name, email, phone or location" disabled></label></div>' +
         '<div id="admin-users-results" aria-live="polite">Loading users…</div></section>' : '') +
       '<section id="admin-cakes"' + (view === 'cakes' ? '' : ' hidden') + '><h2>Custom cake requests</h2><p>Review client ideas, reference images, and follow-up progress.</p><div class="fields"><label>Search requests<input id="cake-request-search" type="search" placeholder="Reference, client, flavour or requirements"></label><label>Status<select id="cake-request-status"><option value="">All statuses</option><option>new</option><option>reviewed</option><option>contacted</option><option>confirmed</option><option>preparing</option><option>ready</option><option>completed</option><option>cancelled</option><option>declined</option></select></label></div><div id="cake-request-list"></div></section>' +
-      '<section id="admin-dashboard"' + (view === 'dashboard' ? '' : ' hidden') + '><div class="analytics-heading"><div><span class="eyebrow">Subanese administration</span><h2>Analytics</h2><p>Orders, collections, inventory, and recorded exceptions</p></div><div class="analytics-heading-actions"><a class="btn secondary" href="#/admin?view=finance">Finance records</a><button type="button" class="btn secondary" id="dashboard-export">Export CSV</button></div></div><div class="analytics-filters"><label>Period<select id="dashboard-period"><option value="0">All time</option><option value="7">Last 7 days</option><option value="30" selected>Last 30 days</option><option value="90">Last 90 days</option></select></label><label>Fulfillment<select id="dashboard-method"><option value="">All types</option><option value="pickup">Pickup</option><option value="delivery">Delivery</option></select></label><label>Order status<select id="dashboard-status"><option value="">All statuses</option><option>confirmed</option><option>preparing</option><option>ready</option><option>out for delivery</option><option>completed</option><option>cancelled</option></select></label><label class="analytics-search">Search<input id="dashboard-search" type="search" placeholder="Customer or order reference"></label><button type="button" class="btn secondary" id="dashboard-reset">Reset</button><label>Trend<select id="dashboard-metric"><option value="value">Order value</option><option value="count">Order volume</option></select></label><label>Group by<select id="dashboard-group"><option value="day">Day</option><option value="week">Week</option><option value="month">Month</option></select></label></div><div id="dashboard-results" aria-live="polite"></div></section>' +
+      '<section id="admin-dashboard"' + (view === 'dashboard' && !userAnalysis ? '' : ' hidden') + '><div class="analytics-heading"><div><span class="eyebrow">Subanese administration</span><h2>Analytics</h2><p>Orders, collections, inventory, and recorded exceptions</p></div><div class="analytics-heading-actions"><a class="btn secondary" href="#/admin?view=finance">Finance records</a><button type="button" class="btn secondary" id="dashboard-export">Export CSV</button></div></div><div class="analytics-filters"><label>Period<select id="dashboard-period"><option value="0">All time</option><option value="7">Last 7 days</option><option value="30" selected>Last 30 days</option><option value="90">Last 90 days</option></select></label><label>Fulfillment<select id="dashboard-method"><option value="">All types</option><option value="pickup">Pickup</option><option value="delivery">Delivery</option></select></label><label>Order status<select id="dashboard-status"><option value="">All statuses</option><option>confirmed</option><option>preparing</option><option>ready</option><option>out for delivery</option><option>completed</option><option>cancelled</option></select></label><label class="analytics-search">Search<input id="dashboard-search" type="search" placeholder="Customer or order reference"></label><button type="button" class="btn secondary" id="dashboard-reset">Reset</button><label>Trend<select id="dashboard-metric"><option value="value">Order value</option><option value="count">Order volume</option></select></label><label>Group by<select id="dashboard-group"><option value="day">Day</option><option value="week">Week</option><option value="month">Month</option></select></label></div><div id="dashboard-results" aria-live="polite"></div></section>' +
       '<section id="admin-transactions"' + (view === 'transactions' ? '' : ' hidden') + '><div class="row"><h2>Transactions</h2><button type="button" id="export-transactions" class="btn secondary">Export CSV</button></div><p class="small">Exports the results matching your current search and status filters. Order ledger. Order status does not confirm payment or refunds.</p><div class="fields"><label>Search<input id="transaction-search" type="search" placeholder="Reference or customer"></label><label>Order status<select id="transaction-status"><option value="">All statuses</option>' + [...new Set(data.analytics.map(order => order.status))].map(status => '<option>' + escapeHTML(status) + '</option>').join('') + '</select></label></div><div id="transaction-results" aria-live="polite"></div></section>' +
       '<section id="admin-finance"' + (view === 'finance' ? '' : ' hidden') + '><div id="finance-content"></div></section>' +
       '<section id="admin-orders"' + (view === 'orders' ? '' : ' hidden') + '><h2>Orders</h2>' +
@@ -3813,7 +3850,7 @@ async function adminPage() {
   ['#dashboard-period','#dashboard-method','#dashboard-status','#dashboard-metric','#dashboard-group'].forEach(id=>$(id).onchange=drawDashboard);
   $('#dashboard-search').oninput=drawDashboard;
   $('#dashboard-reset').onclick=()=>{$('#dashboard-period').value='30';$('#dashboard-method').value='';$('#dashboard-status').value='';$('#dashboard-search').value='';$('#dashboard-metric').value='value';$('#dashboard-group').value='day';drawDashboard();};
-  drawDashboard();
+  if (view === 'dashboard' && !userAnalysis) drawDashboard();
   const drawTransactions = () => {
     const query = $('#transaction-search').value.trim().toLowerCase();
     const status = $('#transaction-status').value;
@@ -3826,6 +3863,7 @@ async function adminPage() {
   drawTransactions();
   if (view === 'finance') await financePage();
   if (view === 'users') await adminUsersPage();
+  if (userAnalysis) await adminUserAnalysisPage();
   if(view==='items') {
     const params=new URLSearchParams(location.hash.split('?')[1]||'');
     const product=Number(params.get('product'));

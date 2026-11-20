@@ -38,6 +38,22 @@ function dashboardModel(allOrders, finance, filters={}, now=new Date()) {
  const cancelled=orders.filter(order=>order.status==='cancelled');
  return{paidByOrder:paid,active:orders.filter(order=>!['completed','cancelled'].includes(order.status)).length,awaiting:orders.filter(order=>order.status==='confirmed'),lowStock:products.filter(product=>product.stock<=5),orders,prior,period,group,metric:filters.metric==='count'?'count':'value',buckets:[...map.values()],quality,incompleteIds:incomplete.map(o=>o.id),unpaidIds:unpaid.map(o=>o.id),outstanding,received:receivedAmount,refunds:refundAmount,net:receivedAmount-refundAmount,paymentCount:payments.length,failed:payments.filter(p=>p.status==='failed'),pending:payments.filter(p=>p.status==='pending'),value:orderValue(orders),priorValue:orderValue(prior),completed:orders.filter(o=>o.status==='completed').length,completion:live(orders).length?orders.filter(o=>o.status==='completed').length/live(orders).length*100:0,cancelled:cancelled.length,cancelledValue:sum(cancelled,'total'),covered:live(orders).length-unpaid.length,coverage:live(orders).length?(live(orders).length-unpaid.length)/live(orders).length*100:0,cancelledUnrefunded:cancelled.reduce((total,order)=>total+Math.max(0,(paid.get(order.id)||0)-(refunded.get(order.id)||0)),0),topQuantity:[...top.values()].sort((a,b)=>b.quantity-a.quantity||b.value-a.value).slice(0,5),top:[...top.values()].sort((a,b)=>b.value-a.value).slice(0,5),invalidDates:allOrders.filter(matches).filter(o=>!Number.isFinite(Date.parse(o.created))).length};
 }
+function renderUserAnalysis({ total, recent, genders, locations }) {
+ const count = new Intl.NumberFormat();
+ const metric = (label, value) => '<article class="analytics-kpi"><p>' + label + '</p><strong>' +
+   count.format(value) + '</strong></article>';
+ const breakdown = (title, column, rows, empty) => '<section class="analytics-panel"><h3>' + title + '</h3>' +
+   (rows.length ? '<div class="table"><table><thead><tr><th scope="col">' + column +
+     '</th><th scope="col">Users</th></tr></thead><tbody>' + rows.map(row =>
+       '<tr><th scope="row">' + escapeHTML(row.label ?? 'Not provided') + '</th><td>' +
+       count.format(row.count) + '</td></tr>'
+     ).join('') + '</tbody></table></div>' : '<p class="analytics-empty">' + empty + '</p>') + '</section>';
+ return '<div class="analytics-kpis">' + metric('Registered users', total) +
+   metric('New registrations in the last 30 days (Nairobi time)', recent) + '</div>' +
+   '<div class="analytics-main-grid">' + breakdown('Users by gender', 'Gender', genders, 'No registrations yet.') +
+   breakdown('Top 10 reported locations', 'Location', locations, 'No locations have been provided.') + '</div>';
+}
+
 function renderAnalytics(model) {
  const esc=escapeHTML,fmt=money;
  const percent=value=>value.toFixed(1)+'%';
