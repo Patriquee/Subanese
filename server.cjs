@@ -84,6 +84,9 @@ for (const [column, fallback] of [['phone', ''], ['preferred_contact', 'email'],
 if (!db.prepare('PRAGMA table_info(customers)').all().some(column => column.name === 'birth_year')) {
   db.exec('ALTER TABLE customers ADD COLUMN birth_year INTEGER');
 }
+function validateCustomerPhone(phone) {
+  if (typeof phone !== 'string' || phone.length > 30 || (phone && (!/^[+0-9() .-]+$/.test(phone) || phone.replace(/\D/g,'').length < 7 || phone.replace(/\D/g,'').length > 15))) fail('Enter a valid phone number, including country code.');
+}
 function customerProfileDetails(body) {
   const gender = body.gender ?? '';
   if (!['', 'Woman', 'Man', 'Non-binary', 'Self-described', 'Prefer not to say'].includes(gender)) fail('Choose a gender from the list.');
@@ -558,10 +561,12 @@ const server = http.createServer(async (request, response) => {
         if (action === 'register') {
           const name = text(body.name,'name',100);
           const profile = customerProfileDetails(body);
+          const phone = typeof body.phone === 'string' ? body.phone.trim() : body.phone ?? '';
+          validateCustomerPhone(phone);
           if (password.length < 12) fail('Use at least 12 characters for your password.');
           if (db.prepare('SELECT 1 FROM customers WHERE email = ?').get(address)) fail('Unable to create this account. Try signing in.',409);
           const salt=uid();customer={id:uid(),name,email:address};
-          db.prepare('INSERT INTO customers (id,name,email,salt,password,created,gender,birth_year,location) VALUES (?,?,?,?,?,?,?,?,?)').run(customer.id,name,address,salt,hash(password,salt).toString('hex'),new Date().toISOString(),...profile);
+          db.prepare('INSERT INTO customers (id,name,email,salt,password,created,gender,birth_year,location,phone) VALUES (?,?,?,?,?,?,?,?,?,?)').run(customer.id,name,address,salt,hash(password,salt).toString('hex'),new Date().toISOString(),...profile,phone);
         } else {
           const record=db.prepare('SELECT * FROM customers WHERE email = ?').get(address);
           const candidate=hash(password,record?.salt || 'missing-customer');
@@ -584,7 +589,7 @@ const server = http.createServer(async (request, response) => {
         if (body.phone !== undefined || body.preferred_contact !== undefined) {
           const phone = typeof body.phone === 'string' ? body.phone.trim() : customer.phone;
           const preferred = body.preferred_contact ?? customer.preferred_contact;
-          if (typeof phone !== 'string' || phone.length > 30 || (phone && (!/^[+0-9() .-]+$/.test(phone) || phone.replace(/\D/g,'').length < 7 || phone.replace(/\D/g,'').length > 15))) fail('Enter a valid phone number, including country code.');
+          validateCustomerPhone(phone);
           if (!['email','whatsapp','sms'].includes(preferred)) fail('Choose Email, WhatsApp or SMS.');
           if (preferred !== 'email' && !phone) fail('Add a phone number for WhatsApp or SMS.');
           db.prepare('UPDATE customers SET phone = ?, preferred_contact = ? WHERE id = ?').run(phone,preferred,customer.id);
@@ -2923,7 +2928,7 @@ async function customerAccountPage(register = false) {
   catch(error) { if(error.message !== 'Sign in to view your account.') throw error; }
   updateCustomerAccountLink(account?.customer);
   if (!account) {
-    main.innerHTML='<section class="section account-auth"><h1>'+ (register?'Create your account.':'Welcome back.') +'</h1><p>Sign in to view your account details, track orders, and see your history.</p><form id="account-auth-form" class="panel">'+(register?'<label>Name<input name="name" autocomplete="name" maxlength="100" required></label>'+customerProfileFields()+'':'')+'<label>Email<input name="email" type="email" autocomplete="email" maxlength="254" required></label><label>Password<input name="password" type="password" autocomplete="'+(register?'new-password':'current-password')+'" '+(register?'minlength="12"':'')+' maxlength="128" required></label><p id="account-error" class="error" role="alert"></p><button class="btn">'+(register?'Create account':'Sign in')+'</button></form><p>'+(register?'<a href="#/account">Already have an account? Sign in</a>':'<a href="#/register">Create an account</a>')+'</p></section>';
+    main.innerHTML='<section class="section account-auth"><h1>'+ (register?'Create your account.':'Welcome back.') +'</h1><p>'+(register?'Gender, year of birth, location, and phone are optional.':'Sign in to view your account details, track orders, and see your history.')+'</p><form id="account-auth-form" class="panel">'+(register?'<label>Name<input name="name" autocomplete="name" maxlength="100" required></label>'+customerProfileFields()+'<label>Phone<input name="phone" type="tel" autocomplete="tel" maxlength="30" placeholder="Include country code"></label>':'')+'<label>Email<input name="email" type="email" autocomplete="email" maxlength="254" required></label><label>Password<input name="password" type="password" autocomplete="'+(register?'new-password':'current-password')+'" '+(register?'minlength="12"':'')+' maxlength="128" required></label><p id="account-error" class="error" role="alert"></p><button class="btn">'+(register?'Create account':'Sign in')+'</button></form><p>'+(register?'<a href="#/account">Already have an account? Sign in</a>':'<a href="#/register">Create an account</a>')+'</p></section>';
     $('#account-auth-form').onsubmit=async event=>{event.preventDefault();const button=event.submitter;button.disabled=true;try{await api('/customer/'+(register?'register':'login'),'POST',Object.fromEntries(new FormData(event.target)));if(register)location.hash='#/account';else await customerAccountPage();}catch(error){$('#account-error').textContent=error.message;}finally{if(button.isConnected)button.disabled=false;}};
     return;
   }
