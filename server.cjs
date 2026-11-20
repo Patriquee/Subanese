@@ -84,25 +84,40 @@ for (const [column, fallback] of [['phone', ''], ['preferred_contact', 'email'],
 if (!db.prepare('PRAGMA table_info(customers)').all().some(column => column.name === 'birth_year')) {
   db.exec('ALTER TABLE customers ADD COLUMN birth_year INTEGER');
 }
+if (!db.prepare('PRAGMA table_info(customers)').all().some(column => column.name === 'birth_date')) {
+  db.exec('ALTER TABLE customers ADD COLUMN birth_date TEXT');
+}
 function validateCustomerPhone(phone) {
   if (typeof phone !== 'string' || phone.length > 30 || (phone && (!/^[+0-9() .-]+$/.test(phone) || phone.replace(/\D/g,'').length < 7 || phone.replace(/\D/g,'').length > 15))) fail('Enter a valid phone number, including country code.');
 }
 function customerProfileDetails(body) {
   const gender = body.gender ?? '';
   if (!['', 'Woman', 'Man', 'Non-binary', 'Self-described', 'Prefer not to say'].includes(gender)) fail('Choose a gender from the list.');
-  const year = body.birth_year;
-  const currentYear = Number(new Intl.DateTimeFormat('en', { timeZone: 'Africa/Nairobi', year: 'numeric' }).format(new Date()));
+  const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Africa/Nairobi' }).format(new Date());
+  const birthDate = body.birth_date ?? '';
+  if (birthDate !== '') {
+    if (typeof birthDate !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(birthDate) ||
+        birthDate < '1900-01-01' || birthDate > today) {
+      fail('Enter a valid date of birth.');
+    }
+    const parsed = new Date(birthDate + 'T00:00:00Z');
+    if (Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== birthDate) {
+      fail('Enter a valid date of birth.');
+    }
+  }
+  const year = birthDate ? birthDate.slice(0, 4) : body.birth_year;
+  const currentYear = Number(today.slice(0, 4));
   const birthYear = year == null || year === '' ? null : Number(year);
   if (birthYear !== null && (!['string', 'number'].includes(typeof year) || !/^\d{4}$/.test(String(year)) || birthYear < 1900 || birthYear > currentYear)) {
     fail('Enter a valid four-digit year of birth.');
   }
   const location = body.location ?? '';
   if (typeof location !== 'string' || location.trim().length > 100) fail('Enter a location up to 100 characters.');
-  return [gender, birthYear, location.trim()];
+  return [gender, birthYear, birthDate || null, location.trim()];
 }
 function signedInCustomer(request) {
   const token = /(?:^|;\s*)customer_sid=([^;]+)/.exec(request.headers.cookie || '')?.[1];
-  return token ? db.prepare("SELECT c.id, c.name, c.email, c.gender, c.birth_year, c.location, c.profile_image, c.phone, c.preferred_contact FROM customers c JOIN customer_sessions s ON s.customer_id = c.id WHERE s.token = ? AND s.expires > ?").get(token, Date.now()) : undefined;
+  return token ? db.prepare("SELECT c.id, c.name, c.email, c.gender, c.birth_year, c.birth_date, c.location, c.profile_image, c.phone, c.preferred_contact FROM customers c JOIN customer_sessions s ON s.customer_id = c.id WHERE s.token = ? AND s.expires > ?").get(token, Date.now()) : undefined;
 }
 
 // Keep existing orders while adding delivery pin coordinates.
@@ -566,7 +581,7 @@ const server = http.createServer(async (request, response) => {
           if (password.length < 12) fail('Use at least 12 characters for your password.');
           if (db.prepare('SELECT 1 FROM customers WHERE email = ?').get(address)) fail('Unable to create this account. Try signing in.',409);
           const salt=uid();customer={id:uid(),name,email:address};
-          db.prepare('INSERT INTO customers (id,name,email,salt,password,created,gender,birth_year,location,phone) VALUES (?,?,?,?,?,?,?,?,?,?)').run(customer.id,name,address,salt,hash(password,salt).toString('hex'),new Date().toISOString(),...profile,phone);
+          db.prepare('INSERT INTO customers (id,name,email,salt,password,created,gender,birth_year,birth_date,location,phone) VALUES (?,?,?,?,?,?,?,?,?,?,?)').run(customer.id,name,address,salt,hash(password,salt).toString('hex'),new Date().toISOString(),...profile,phone);
         } else {
           const record=db.prepare('SELECT * FROM customers WHERE email = ?').get(address);
           const candidate=hash(password,record?.salt || 'missing-customer');
@@ -601,8 +616,11 @@ const server = http.createServer(async (request, response) => {
           db.prepare('UPDATE customers SET profile_image = ? WHERE id = ?').run(image,customer.id);
           return send({ok:true});
         }
-        const profile = customerProfileDetails({ ...customer, ...body });
-        db.prepare('UPDATE customers SET gender = ?, birth_year = ?, location = ? WHERE id = ?').run(...profile, customer.id);
+        const details = { ...customer, ...body };
+        if (body.birth_year !== undefined && body.birth_date === undefined) details.birth_date = null;
+        if (body.birth_date !== undefined && !body.birth_date && customer.birth_date && body.birth_year === undefined) details.birth_year = null;
+        const profile = customerProfileDetails(details);
+        db.prepare('UPDATE customers SET gender = ?, birth_year = ?, birth_date = ?, location = ? WHERE id = ?').run(...profile, customer.id);
         return send({ok:true});
       }
       fail('Not found.',404);
@@ -1933,6 +1951,10 @@ body:not(.admin-view) .store-card .store-allergens { font-size: 12px; line-heigh
 
 
 .account-auth { max-width: 600px; margin-inline: auto; }
+.birth-date-entry { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: end; }
+.birth-date-entry label { min-width: 0; }
+.birth-date-entry input[type="date"] { grid-column: 1 / -1; }
+.birth-date-entry .birth-date-picker { position: absolute; inset: auto 0 0 auto; width: 1px; height: 1px; padding: 0; opacity: 0; pointer-events: none; }
 .account-tabs { display: flex; flex-wrap: wrap; gap: 8px; border-bottom: 1px solid var(--line); padding-bottom: 12px; margin-bottom: 24px; }
 .account-tabs a { padding: 12px 16px; border-radius: 6px; }
 .account-tabs a[aria-current="page"] { background: var(--ink); color: var(--cream); }
@@ -2911,15 +2933,50 @@ async function refreshCustomerAccountLink() {
 }
 
 function customerProfileFields(customer = {}) {
-  const currentYear = new Intl.DateTimeFormat('en', { timeZone: 'Africa/Nairobi', year: 'numeric' }).format(new Date());
+  const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Africa/Nairobi' }).format(new Date());
+  const savedYear = !customer.birth_date && customer.birth_year;
   return '<label>Gender<select name="gender"><option value="">Select if you wish</option>' +
     ['Woman', 'Man', 'Non-binary', 'Self-described', 'Prefer not to say'].map(gender =>
       '<option' + (customer.gender === gender ? ' selected' : '') + '>' + gender + '</option>'
     ).join('') + '</select></label>' +
-    '<label>Year of birth<input name="birth_year" type="number" min="1900" max="' + currentYear +
-    '" autocomplete="bday-year" value="' + escapeHTML(String(customer.birth_year ?? '')) + '"></label>' +
+    '<div class="birth-date-entry"><label>Date of birth (DD/MM/YYYY)' +
+    '<input name="birth_date" type="text" placeholder="DD/MM/YYYY" pattern="[0-9]{2}/[0-9]{2}/[0-9]{4}" maxlength="10" autocomplete="bday" value="' +
+    escapeHTML((customer.birth_date || '').split('-').reverse().join('/')) + '"' + (savedYear ? ' aria-describedby="saved-birth-year"' : '') + '></label>' +
+    '<button type="button" class="btn secondary" data-birth-date-calendar>Calendar</button>' +
+    '<input class="birth-date-picker" type="date" min="1900-01-01" max="' + today +
+    '" form="" aria-label="Select date of birth" aria-hidden="true" tabindex="-1"></div>' +
+    (savedYear ? '<small id="saved-birth-year">Saved birth year: ' + escapeHTML(String(savedYear)) + '</small>' : '') +
     '<label>Location<input name="location" maxlength="100" autocomplete="address-level2" placeholder="Town or city" value="' +
     escapeHTML(customer.location || '') + '"></label>';
+}
+
+function birthDateToISO(value) {
+  return value.split('/').reverse().join('-');
+}
+
+function customerProfileFormValues(form) {
+  const values = Object.fromEntries(new FormData(form));
+  if (values.birth_date !== undefined) values.birth_date = birthDateToISO(values.birth_date);
+  return values;
+}
+
+function setupBirthDatePicker(form) {
+  const field = form.elements.birth_date;
+  const picker = form.querySelector('.birth-date-picker');
+  const button = form.querySelector('[data-birth-date-calendar]');
+  button.onclick = () => {
+    picker.value = birthDateToISO(field.value);
+    try {
+      picker.showPicker();
+    } catch {
+      picker.classList.remove('birth-date-picker');
+      picker.removeAttribute('aria-hidden');
+      picker.removeAttribute('tabindex');
+      picker.focus();
+    }
+  };
+  picker.onchange = () => { field.value = picker.value.split('-').reverse().join('/'); };
+  field.addEventListener('input', () => { picker.value = birthDateToISO(field.value); });
 }
 
 async function customerAccountPage(register = false) {
@@ -2928,8 +2985,9 @@ async function customerAccountPage(register = false) {
   catch(error) { if(error.message !== 'Sign in to view your account.') throw error; }
   updateCustomerAccountLink(account?.customer);
   if (!account) {
-    main.innerHTML='<section class="section account-auth"><h1>'+ (register?'Create your account.':'Welcome back.') +'</h1><p>'+(register?'Gender, year of birth, location, and phone are optional.':'Sign in to view your account details, track orders, and see your history.')+'</p><form id="account-auth-form" class="panel">'+(register?'<label>Name<input name="name" autocomplete="name" maxlength="100" required></label>'+customerProfileFields()+'<label>Phone<input name="phone" type="tel" autocomplete="tel" maxlength="30" placeholder="Include country code"></label>':'')+'<label>Email<input name="email" type="email" autocomplete="email" maxlength="254" required></label><label>Password<input name="password" type="password" autocomplete="'+(register?'new-password':'current-password')+'" '+(register?'minlength="12"':'')+' maxlength="128" required></label><p id="account-error" class="error" role="alert"></p><button class="btn">'+(register?'Create account':'Sign in')+'</button></form><p>'+(register?'<a href="#/account">Already have an account? Sign in</a>':'<a href="#/register">Create an account</a>')+'</p></section>';
-    $('#account-auth-form').onsubmit=async event=>{event.preventDefault();const button=event.submitter;button.disabled=true;try{await api('/customer/'+(register?'register':'login'),'POST',Object.fromEntries(new FormData(event.target)));if(register)location.hash='#/account';else await customerAccountPage();}catch(error){$('#account-error').textContent=error.message;}finally{if(button.isConnected)button.disabled=false;}};
+    main.innerHTML='<section class="section account-auth"><h1>'+ (register?'Create your account.':'Welcome back.') +'</h1><p>'+(register?'Gender, date of birth, location, and phone are optional.':'Sign in to view your account details, track orders, and see your history.')+'</p><form id="account-auth-form" class="panel">'+(register?'<label>Name<input name="name" autocomplete="name" maxlength="100" required></label>'+customerProfileFields()+'<label>Phone<input name="phone" type="tel" autocomplete="tel" maxlength="30" placeholder="Include country code"></label>':'')+'<label>Email<input name="email" type="email" autocomplete="email" maxlength="254" required></label><label>Password<input name="password" type="password" autocomplete="'+(register?'new-password':'current-password')+'" '+(register?'minlength="12"':'')+' maxlength="128" required></label><p id="account-error" class="error" role="alert"></p><button class="btn">'+(register?'Create account':'Sign in')+'</button></form><p>'+(register?'<a href="#/account">Already have an account? Sign in</a>':'<a href="#/register">Create an account</a>')+'</p></section>';
+    if (register) setupBirthDatePicker($('#account-auth-form'));
+    $('#account-auth-form').onsubmit=async event=>{event.preventDefault();const button=event.submitter;button.disabled=true;try{await api('/customer/'+(register?'register':'login'),'POST',customerProfileFormValues(event.target));if(register)location.hash='#/account';else await customerAccountPage();}catch(error){$('#account-error').textContent=error.message;}finally{if(button.isConnected)button.disabled=false;}};
     return;
   }
   const view=new URLSearchParams(location.hash.split('?')[1] || '').get('view') || 'overview';
@@ -3032,6 +3090,7 @@ async function customerAccountPage(register = false) {
   };
   target.insertAdjacentHTML('beforeend', '<form id="customer-profile-details" class="panel"><h3>Profile details</h3>' +
     customerProfileFields(customer) + '<p role="status"></p><button class="btn">Save profile details</button></form>');
+  setupBirthDatePicker($('#customer-profile-details'));
   $('#customer-profile-details').onsubmit = async event => {
     event.preventDefault();
     const form = event.currentTarget;
@@ -3039,7 +3098,12 @@ async function customerAccountPage(register = false) {
     const status = form.querySelector('[role="status"]');
     button.disabled = true;
     try {
-      await api('/customer/profile', 'PATCH', Object.fromEntries(new FormData(form)));
+      const values = customerProfileFormValues(form);
+      await api('/customer/profile', 'PATCH', values);
+      if (values.birth_date) {
+        form.querySelector('#saved-birth-year')?.remove();
+        form.elements.birth_date.removeAttribute('aria-describedby');
+      }
       status.textContent = 'Profile details saved.';
     } catch (error) {
       status.textContent = error.message;
